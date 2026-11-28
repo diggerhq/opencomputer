@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ApiEvent } from '@opencomputer/sdk/computer'
-import { buildTranscript, unsent, type Item } from './transcript'
+import { buildTranscript, failuresThatMatter, unsent, type Item } from './transcript'
 
 // The settled pattern: a running turn shows one work line and its latest
 // message; an ended turn folds everything before its last message into one line.
@@ -284,5 +284,53 @@ describe('delivery', () => {
     expect(items[items.length - 1]).toMatchObject({ state: 'waiting' })
     const note = { ...steer('From the track'), actor: { id: 'agent', name: null, via: 'agent', client: null } } as ApiEvent
     expect(buildTranscript([...start(), note]).slice(-1)[0]).toMatchObject({ kind: 'line', text: 'From the track' })
+  })
+})
+
+// Work 147: a failure stays loud only while no later step in its block got past it.
+describe('failures that matter', () => {
+  const block = (...calls: [string, 'completed' | 'failed' | null][]) => {
+    const events = [ev('message.received', 'f1', { input: 'Go' }), ev('turn.started', 'f1')]
+    for (const [id, end] of calls) {
+      events.push(ev('tool.started', 'f1', { callId: id, title: id }))
+      if (end) events.push(ev(`tool.${end}`, 'f1', { callId: id }))
+    }
+    const [w] = works(buildTranscript(events))
+    return [...failuresThatMatter(w.entries)].map((s) => s.title)
+  }
+
+  it('a search that found nothing, then work that went on, is quiet', () => {
+    expect(block(['grep', 'failed'], ['read', 'completed'], ['edit', 'completed'])).toEqual([])
+  })
+
+  it('a test that failed and passed on the next run is quiet', () => {
+    expect(block(['test', 'failed'], ['edit', 'completed'], ['test again', 'completed'])).toEqual([])
+  })
+
+  it('a failure the block ended on stays loud', () => {
+    expect(block(['read', 'completed'], ['push', 'failed'])).toEqual(['push'])
+  })
+
+  it('several failures after the last success all stay loud', () => {
+    expect(block(['grep', 'failed'], ['read', 'completed'], ['push', 'failed'], ['push again', 'failed'])).toEqual(['push again', 'push'])
+  })
+
+  it('a step still running does not quiet the failure before it', () => {
+    expect(block(['test', 'failed'], ['test again', null])).toEqual(['test'])
+  })
+
+  it('a call the turn cut short stays loud', () => {
+    const events = [
+      ev('message.received', 'f2', { input: 'Go' }),
+      ev('turn.started', 'f2'),
+      ev('tool.started', 'f2', { callId: 'a', title: 'Read' }),
+      ev('tool.completed', 'f2', { callId: 'a' }),
+      ev('tool.started', 'f2', { callId: 'b', title: 'Run the suite' }),
+      ev('tool.failed', 'f2', { callId: 'b', settledBy: 'turn.cancelled' }),
+      ev('turn.cancelled', 'f2'),
+    ]
+    const [w] = works(buildTranscript(events))
+    expect(w.settled).toBe(true)
+    expect([...failuresThatMatter(w.entries)].map((s) => s.title)).toEqual(['Run the suite'])
   })
 })

@@ -23,6 +23,7 @@ import {
 import { useConversation, useSurface } from '../hooks'
 import { ThreadGroup } from './ThreadRows'
 import {
+  failuresThatMatter,
   formatDuration,
   type Entry,
   type Item,
@@ -152,12 +153,13 @@ const SLOT = 'flex size-3.5 flex-none items-center justify-center'
 const FOLD =
   'group text-muted-foreground hover:text-foreground focus-visible:text-foreground flex max-w-full min-w-0 items-center gap-1.5 rounded-sm text-meta outline-none'
 
-function StepLine({ step }: { step: Step }) {
+// A failure the agent got past keeps its × and its word, in the plain color.
+function StepLine({ step, loud }: { step: Step; loud: boolean }) {
   return (
     <div
       className={cn(
         'text-muted-foreground text-meta flex items-start gap-2',
-        step.status === 'failed' && WARN,
+        loud && WARN,
       )}
     >
       <span className={cn(SLOT, '[&>svg]:text-faint h-lh')}>
@@ -179,8 +181,8 @@ function StepLine({ step }: { step: Step }) {
 
 const seconds = (ms: number) => `${Math.max(1, Math.round(ms / 1000))}s`
 
-function EntryView({ entry }: { entry: Entry }) {
-  if (entry.kind === 'step') return <StepLine step={entry} />
+function EntryView({ entry, loud }: { entry: Entry; loud: Set<Step> }) {
+  if (entry.kind === 'step') return <StepLine step={entry} loud={loud.has(entry)} />
   if (entry.kind === 'text')
     return (
       <div className="text-foreground/85 text-meta">
@@ -234,9 +236,8 @@ function workLabel(item: Extract<Item, { kind: 'work' }>): ReactNode {
 }
 
 function Work({ item }: { item: Extract<Item, { kind: 'work' }> }) {
-  const failed = item.entries.filter(
-    (en) => en.kind === 'step' && en.status === 'failed',
-  ).length
+  const loud = failuresThatMatter(item.entries)
+  const failed = loud.size
   // The working mark is for a step running now, not for a turn that is waiting.
   const now = current(item)
   const running =
@@ -258,7 +259,7 @@ function Work({ item }: { item: Extract<Item, { kind: 'work' }> }) {
       </CollapsibleTrigger>
       <CollapsibleContent className={cn(FOLD_BODY, 'mt-1.5 ml-1.5')}>
         {item.entries.map((en) => (
-          <EntryView key={en.key} entry={en} />
+          <EntryView key={en.key} entry={en} loud={loud} />
         ))}
       </CollapsibleContent>
     </Collapsible>
@@ -274,6 +275,7 @@ const count = (n: number) =>
 
 function SubagentView({ item }: { item: Extract<Item, { kind: 'subagent' }> }) {
   const { sub, steps, activity } = item
+  const loud = failuresThatMatter(steps)
   const running = sub.status === 'running'
   const progress = [
     running ? activity : (SUB_END[sub.status] ?? null),
@@ -322,7 +324,7 @@ function SubagentView({ item }: { item: Extract<Item, { kind: 'subagent' }> }) {
       )}
       <CollapsibleContent className={cn(FOLD_BODY, 'mt-2 ml-1.5')}>
         {steps.map((st) => (
-          <StepLine key={st.key} step={st} />
+          <StepLine key={st.key} step={st} loud={loud.has(st)} />
         ))}
         {!steps.length && !answer && (
           <div className="text-muted-foreground text-meta">No steps yet</div>
