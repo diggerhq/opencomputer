@@ -203,7 +203,8 @@ describe('the composer', () => {
       Object.defineProperty(paste, 'clipboardData', { value: { files: [file], getData: () => '' } })
       el.querySelector('[data-draft="t:cs_1"]')!.dispatchEvent(paste)
     })
-    expect(paste.defaultPrevented).toBe(false)
+    // CodeMirror takes every paste as text; with no text, nothing lands.
+    expect(surface.setDraft).not.toHaveBeenCalled()
     expect(surface.attach).not.toHaveBeenCalled()
   })
 })
