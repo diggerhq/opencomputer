@@ -90,13 +90,13 @@ describe.skipIf(!existsSync(AGENT))('offload jobs with the real builder agent', 
     const job = jobs.status(F, id);
     expect(job).toMatchObject({ state: 'done', exitCode: 0, agentState: 'done' });
     expect(Buffer.from(jobs.logs(F, id, 0).data, 'base64').toString()).toContain('built');
-    const out = objects.get(`/offload/i-h/${id}/out.tgz`)!;
+    const out = objects.get(`/runs/i-h/${id}/out.tgz`)!;
     expect(createHash('sha256').update(out).digest('hex')).toBe(job.artifactSha256);
     const x = mkdtempSync(path.join(os.tmpdir(), 'out-'));
     mkdirSync(x, { recursive: true });
     execFileSync('tar', ['-xzf', '-', '-C', x], { input: out });
     expect(execFileSync('cat', [path.join(x, 'dist', 'out.txt')]).toString()).toBe('HELLO');
-    expect(objects.has(`/offload/i-h/${id}/build.log`)).toBe(true);
+    expect(objects.has(`/runs/i-h/${id}/build.log`)).toBe(true);
     expect(terminated.at(-1)).toBe(`mv-${n}`);
   });
 

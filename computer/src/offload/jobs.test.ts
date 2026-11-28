@@ -83,7 +83,7 @@ describe('offload jobs', () => {
     const { jobs, aws, go } = setup();
     const id = await go();
     await until(() => agentJobs.has(id));
-    expect(agentJobs.get(id)!.body).toMatchObject({ cmd: 'make', timeoutSec: 300, srcUrl: `https://s3.test/get/offload/i-host/${id}/src.tgz` });
+    expect(agentJobs.get(id)!.body).toMatchObject({ cmd: 'make', timeoutSec: 300, srcUrl: `https://s3.test/get/runs/i-host/${id}/src.tgz` });
     expect(aws.runs[0]).toMatchObject({ jobId: id, image: 'img-s', minutes: 5, maxMinutes: 60 });
     expect(aws.tagged[0]).toMatchObject({ 'opencomputer:offload': 'i-host', 'opencomputer:job': id });
     agentJobs.get(id)!.log = Buffer.from('hello\n');
@@ -92,7 +92,7 @@ describe('offload jobs', () => {
     expect(aws.terminated).toEqual(['mv-1']);
     expect(Buffer.from(jobs.logs(F(), id, 0).data, 'base64').toString()).toBe('hello\n');
     expect(jobs.logs(F(), id, 6).eof).toBe(true);
-    expect(await jobs.fetch(F(), id)).toMatchObject({ url: `https://s3.test/get/offload/i-host/${id}/out.tgz`, sha256: 'ab'.repeat(32) });
+    expect(await jobs.fetch(F(), id)).toMatchObject({ url: `https://s3.test/get/runs/i-host/${id}/out.tgz`, sha256: 'ab'.repeat(32) });
     expect(badAuth).toBe(0);
   });
 
