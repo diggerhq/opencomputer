@@ -7,23 +7,22 @@
 // - kept while a ledger row names it, the row is not terminal and its deadline
 //   has not passed;
 // - terminated when a row names it otherwise (ended, or past its deadline);
-// - with no row naming it, judged by its tags: another box's
-//   (`opencomputer:offload` not ours) is kept; ours is terminated unless its
-//   `opencomputer:job` is a job still launching (RunMicrovm answered, row not
-//   yet updated); untagged (tagging failed, or the tags cannot be read) is
-//   terminated once older than 10 minutes and no job of ours is launching.
+// - with no row naming it, terminated once older than 10 minutes and no job
+//   of ours is launching (RunMicrovm answered, row not yet updated).
+// MicroVMs are not taggable (aws.ts), so the image ARN and the ledger are all
+// there is to go on. A failed TerminateMicrovm (say, IAM still denying it) is
+// an error for this pass; the next pass retries it.
 
 import { TERMINAL } from '../offload-protocol.js';
 import type { Aws } from './aws.js';
 import type { JobRow } from './ledger.js';
 
-const UNTAGGED_GRACE = 10 * 60_000;
+const UNOWNED_GRACE = 10 * 60_000;
 
 export interface ReapDeps {
   aws: Aws;
   rows: () => JobRow[];
   images: string[];
-  hostTag: string;
   now?: () => number;
 }
 
@@ -53,7 +52,7 @@ export async function reap(d: ReapDeps): Promise<Reaped> {
       const id = vm.microvmId;
       if (!id || seen.has(id) || vm.state === 'TERMINATED' || vm.state === 'TERMINATING') continue;
       seen.add(id);
-      const why = await verdict(id, vm.startedAt);
+      const why = verdict(id, vm.startedAt);
       if (!why) {
         out.kept++;
         continue;
@@ -69,18 +68,11 @@ export async function reap(d: ReapDeps): Promise<Reaped> {
   return out;
 
   /** Why to terminate it, or undefined to keep it. */
-  async function verdict(id: string, startedAt: Date | undefined): Promise<string | undefined> {
+  function verdict(id: string, startedAt: Date | undefined): string | undefined {
     const row = byVm.get(id);
     if (row) return live(row) ? undefined : TERMINAL.has(row.state) ? `job ${row.id} is ${row.state}` : `job ${row.id} is past its deadline`;
-    const tags = await d.aws.tags(id).catch(() => undefined);
-    const owner = tags?.['opencomputer:offload'];
-    if (owner && owner !== d.hostTag) return undefined;
-    if (owner) {
-      const job = tags?.['opencomputer:job'];
-      return launching.some((r) => r.id === job && live(r)) ? undefined : 'ours, and no live job owns it';
-    }
     const age = startedAt ? now - startedAt.getTime() : Number.POSITIVE_INFINITY;
-    if (age < UNTAGGED_GRACE || launching.some(live)) return undefined;
-    return 'untagged, and no job of ours is launching';
+    if (age < UNOWNED_GRACE || launching.some(live)) return undefined;
+    return 'no job owns it, and no job of ours is launching';
   }
 }

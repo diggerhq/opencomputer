@@ -43,20 +43,17 @@ afterAll(() => void server.close());
 function fakeAws() {
   const runs: Record<string, unknown>[] = [];
   const terminated: string[] = [];
-  const tagged: Record<string, string>[] = [];
   let n = 0;
   const a: Aws = {
     run: async (s) => (runs.push({ ...s }), { microvmId: `mv-${++n}`, endpoint }),
     state: async (id) => (terminated.includes(id) ? 'TERMINATED' : 'RUNNING'),
-    tag: async (_id, t) => void tagged.push(t),
-    tags: async () => ({}),
     authToken: async () => 'tok',
     terminate: async (id) => void terminated.push(id),
     list: async () => [],
     presignPut: async (k) => `https://s3.test/put/${k}`,
     presignGet: async (k) => `https://s3.test/get/${k}`,
   };
-  return { a, runs, terminated, tagged };
+  return { a, runs, terminated };
 }
 
 const F = (o: Partial<Fence> = {}): Fence => ({ org: 'o', sessionKey: 'C1:1.1', runnerId: 'r1', epoch: 10, ...o });
@@ -79,13 +76,12 @@ function setup(o: { now?: () => number } = {}) {
 }
 
 describe('offload jobs', () => {
-  it('runs a job to done: launched, tagged, logs pulled, MicroVM terminated', async () => {
+  it('runs a job to done: launched, logs pulled, MicroVM terminated', async () => {
     const { jobs, aws, go } = setup();
     const id = await go();
     await until(() => agentJobs.has(id));
     expect(agentJobs.get(id)!.body).toMatchObject({ cmd: 'make', timeoutSec: 300, srcUrl: `https://s3.test/get/runs/i-host/${id}/src.tgz` });
     expect(aws.runs[0]).toMatchObject({ jobId: id, image: 'img-s', minutes: 5, maxMinutes: 60 });
-    expect(aws.tagged[0]).toMatchObject({ 'opencomputer:offload': 'i-host', 'opencomputer:job': id });
     agentJobs.get(id)!.log = Buffer.from('hello\n');
     Object.assign(agentJobs.get(id)!, { state: 'done', exitCode: 0 });
     await until(() => jobs.status(F(), id).state === 'done');

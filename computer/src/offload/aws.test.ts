@@ -1,7 +1,7 @@
 import { mockClient } from 'aws-sdk-client-mock';
 import {
   CreateMicrovmAuthTokenCommand, GetMicrovmCommand, LambdaMicrovmsClient, ListMicrovmsCommand, ResourceNotFoundException, RunMicrovmCommand,
-  TagResourceCommand, TerminateMicrovmCommand,
+  TerminateMicrovmCommand,
 } from '@aws-sdk/client-lambda-microvms';
 import { S3Client } from '@aws-sdk/client-s3';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -12,7 +12,7 @@ const credentials = { accessKeyId: 'AKIDTESTONLY', secretAccessKey: 'test-only' 
 const microvms = new LambdaMicrovmsClient({ region: 'us-east-1', credentials });
 const s3 = new S3Client({ region: 'us-east-1', credentials });
 const mv = mockClient(microvms);
-const a = aws({ region: 'us-east-1', accountId: '123456789012', bucket: 'bkt', microvms, s3 });
+const a = aws({ region: 'us-east-1', bucket: 'bkt', microvms, s3 });
 const item = (microvmId: string) => ({ microvmId, state: 'RUNNING' as const, imageArn: 'arn', imageVersion: '1', startedAt: new Date(0) });
 const notFound = () => new ResourceNotFoundException({ message: 'gone', $metadata: {} });
 
@@ -29,11 +29,6 @@ describe('aws', () => {
     expect(mv.commandCalls(RunMicrovmCommand)[0].args[0].input).toEqual({
       imageIdentifier: 'img', imageVersion: '3', clientToken: 'j1', maximumDurationInSeconds: 1920, idlePolicy: IDLE_POLICY,
     });
-  });
-  it('tags by MicroVM ARN', async () => {
-    mv.on(TagResourceCommand).resolves({});
-    await a.tag('mv-1', { 'opencomputer:job': 'j1' });
-    expect(mv.commandCalls(TagResourceCommand)[0].args[0].input).toEqual({ Resource: 'arn:aws:lambda:us-east-1:123456789012:microvm:mv-1', Tags: { 'opencomputer:job': 'j1' } });
   });
   it('auth token: port 8080, 60 minutes', async () => {
     mv.on(CreateMicrovmAuthTokenCommand).resolves({ authToken: { 'X-aws-proxy-auth': 'tok' } });

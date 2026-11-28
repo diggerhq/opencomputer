@@ -17,7 +17,6 @@
 // - Nothing here carries an AWS credential, endpoint or token; a session gets
 //   presigned S3 URLs and nothing else.
 
-import { createHash } from 'node:crypto';
 import net from 'node:net';
 import path from 'node:path';
 
@@ -37,9 +36,6 @@ export interface Fence {
 }
 
 export const sameFence = (a: Fence, b: Fence) => a.org === b.org && a.sessionKey === b.sessionKey && a.runnerId === b.runnerId && a.epoch === b.epoch;
-
-/** The session tag on a MicroVM: sha256 of the session key, 16 hex digits (the key itself never leaves the box). */
-export const sessionTag = (key: string) => createHash('sha256').update(key).digest('hex').slice(0, 16);
 
 export type JobState = 'submitted' | 'queued' | 'launching' | 'running' | 'done' | 'failed' | 'cancelled' | 'timeout';
 export const TERMINAL: ReadonlySet<JobState> = new Set(['done', 'failed', 'cancelled', 'timeout']);
