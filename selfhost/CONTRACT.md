@@ -116,7 +116,7 @@ The VM's firewall needs no inbound port besides SSH.
 | `/run/slack-presence` | sp-host:agent | runner sockets (tmpfiles) |
 | `/run/oc-modelproxy/{api,control}.sock` | modelproxy | sessions' model socket (group agent); host's control socket (group sp-host) |
 | gateway volume, mounted at `/data` in the container | the gateway | Miniflare's state (`do/`, `d1/`, `r2/`, `kv/`), `keys.json` and `host-token`. Named volume `gateway-data`, in `oc-gateway`'s Podman storage. It is not the host's `/data`; never bind the host's `/data` into the gateway. Back it up whole |
-| `/var/lib/oc-gateway/selfhost`, `/var/lib/oc-gateway/services/managed-agents` | oc-gateway | the compose stack, copied from the host's checkout by `host-install.sh` (compose builds from `/var/lib/oc-gateway`); `selfhost/.env` holds the gateway's secrets (0600) |
+| `/var/lib/oc-gateway/selfhost` | oc-gateway | the compose stack, copied from the host's checkout by `host-install.sh`, with the gateway image pinned in `compose.yaml`; `selfhost/.env` holds the gateway's secrets (0600) |
 
 ## 6. Users
 
@@ -136,7 +136,7 @@ The compose stack runs as the dedicated `oc-gateway` user (or the one `GATEWAY_U
 |---|---|
 | Compose | `podman-compose` 1.6.0 (`PODMAN_COMPOSE_VERSION`, refused below 1.1.0) in a venv at `/opt/podman-compose`, linked at `/usr/local/bin/podman-compose`, ahead of Ubuntu's 1.0.6 on PATH (1.0.6 ignores `profiles:`, so the tunnel services would not start). `podman compose` runs it. Docker Compose v2 reads the same file, but this script installs no Docker. |
 | Reboot and crashes | #1253's `selfhost/systemd/opencomputer-gateway.service`, a user unit of `oc-gateway` (lingering) that runs `podman-compose up --abort-on-container-exit` with `Restart=always`. `restart: always` alone is not enough: rootless Podman leaves a `podman kill`ed container `Exited (137)`. `podman-restart.service` stays enabled for the `restart: always` services. Lingering also gives Podman the user session it needs for healthchecks. |
-| Where compose runs | as `oc-gateway`, from `/var/lib/oc-gateway/selfhost`. `host-install.sh` copies `selfhost/` and `services/managed-agents/` there from its checkout's HEAD, owned by `oc-gateway`, on every install (compose builds `selfhost/gateway/Dockerfile` from `/var/lib/oc-gateway`). `.env` there is `oc-gateway`'s, mode 0600, and an install keeps it. |
+| Where compose runs | as `oc-gateway`, from `/var/lib/oc-gateway/selfhost`. `host-install.sh` copies `selfhost/` there from its checkout's HEAD, owned by `oc-gateway`, on every install. It pins the gateway image in that `compose.yaml` (`ghcr.io/diggerhq/computer-gateway:src-<hash>`, `selfhost/gateway/source-tag.sh`) and pulls it as `oc-gateway`. With `--build-gateway`, it builds the image as `oc-gateway` instead, from a copy of the build context in `/var/lib/oc-gateway/gateway-src` that it removes after the build. compose never builds. `.env` there is `oc-gateway`'s, mode 0600, and an install keeps it. |
 
 ## 8. Order of start
 

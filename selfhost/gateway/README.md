@@ -28,6 +28,19 @@ curl -H "Authorization: Bearer $SETUP_TOKEN" -H 'x-opencomputer-surface: api' -H
   -d '{"input":"hello"}' localhost:8080/v1/computer/sessions
 ```
 
+## The image
+
+`.github/workflows/gateway-image.yml` builds `Dockerfile` on main (and `v*` tags) and pushes
+`ghcr.io/diggerhq/computer-gateway:src-<hash>`, where `src-<hash>` comes from `source-tag.sh`, a hash of the
+source trees the Dockerfile copies. It also pushes `:<git sha>`, `:main` and the release tag. `host-install.sh` pulls
+the `src-` tag of its checkout and pins it in the `compose.yaml` it installs. `compose.yaml` has no `build:`, so a
+missing image is pulled and never built by `up`. To build on the VM, use `host-install.sh --build-gateway`. It builds from
+a copy of the build context and tags the result `localhost/computer-gateway:src-<hash>`. To build by hand from the repository root:
+
+```sh
+podman build -f selfhost/gateway/Dockerfile -t computer-gateway:local .   # then GATEWAY_IMAGE=localhost/computer-gateway:local in .env
+```
+
 ## Keeping it up (rootless Podman)
 
 `restart: always` alone does not keep the gateway up. Podman counts `podman kill` as a stop by the user and leaves the

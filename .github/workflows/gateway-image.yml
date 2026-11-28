@@ -1,0 +1,117 @@
+name: Gateway image
+
+# The self-host gateway's image (selfhost/gateway/Dockerfile), built for
+# linux/amd64 and pushed to ghcr.io/diggerhq/computer-gateway, so that a
+# self-hosted VM pulls it (selfhost/host-install.sh) instead of building it.
+#
+#   :src-<hash>   selfhost/gateway/source-tag.sh: a hash of the source trees
+#                 the Dockerfile copies. What host-install.sh pins: every commit
+#                 has one, and it names the image of the last change to them.
+#   :<commit>     the full git sha this run built
+#   :main         the latest build of main (never what an install runs)
+#   :v*           a release tag, when one is pushed
+#
+# Pushes only from main and v* tags; a pull request does not build. The path
+# filters are source-tag.sh's GATEWAY_SOURCE plus this file: keep them in
+# step. Every pushed image gets GitHub's build provenance attestation. The
+# only credential is GITHUB_TOKEN.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    # Path filters are not evaluated for tag pushes: a release tag always builds.
+    tags: ['v*']
+    paths:
+      - selfhost/gateway/**
+      - services/managed-agents/**
+      - cloudflare-workers/api-edge/**
+      - cloudflare-workers/shared/**
+      - web/**
+      - sdks/typescript/src/computer/**
+      - .github/workflows/gateway-image.yml
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/diggerhq/computer-gateway
+
+jobs:
+  image:
+    name: Build and push
+    # By hand too, but only main and release tags push.
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      # The attestation: the run's identity token signs it, and GitHub stores it.
+      id-token: write
+      attestations: write
+    concurrency:
+      group: gateway-image-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Tags
+        id: tags
+        run: |
+          src="$(selfhost/gateway/source-tag.sh HEAD)"
+          tags=("$IMAGE:$src" "$IMAGE:$GITHUB_SHA")
+          case $GITHUB_REF in
+            refs/heads/main) tags+=("$IMAGE:main") ;;
+            refs/tags/v*) tags+=("$IMAGE:$GITHUB_REF_NAME") ;;
+          esac
+          printf 'ref=%s\n' "$IMAGE:$src" >> "$GITHUB_OUTPUT"
+          printf 'all=%s\n' "${tags[*]}" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "${tags[@]}"
+
+      - name: Build
+        env:
+          REF: ${{ steps.tags.outputs.ref }}
+        run: docker build --platform linux/amd64 -f selfhost/gateway/Dockerfile -t "$REF" .
+
+      # It serves: keys, both databases' migrations, /healthz.
+      - name: Test
+        env:
+          REF: ${{ steps.tags.outputs.ref }}
+        run: |
+          docker run -d --name gw -p 127.0.0.1:8080:8080 -e SETUP_TOKEN=ci-test "$REF"
+          for _ in $(seq 60); do
+            if curl -fsS 127.0.0.1:8080/healthz; then echo; docker rm -f gw >/dev/null; exit 0; fi
+            sleep 2
+          done
+          docker logs gw
+          exit 1
+
+      - name: Log in to ghcr.io
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Push
+        id: push
+        env:
+          REF: ${{ steps.tags.outputs.ref }}
+          TAGS: ${{ steps.tags.outputs.all }}
+        run: |
+          for tag in $TAGS; do
+            [[ $tag == "$REF" ]] || docker tag "$REF" "$tag"
+            docker push "$tag"
+          done
+          manifest="$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}')"
+          digest="$(jq -r .digest <<<"$manifest")"
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "\`$IMAGE@$digest\`: $TAGS" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Attest
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
