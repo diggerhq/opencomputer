@@ -12,6 +12,9 @@
 //     summary never overwrites a newer one, so `GET /sessions` never reads the log.
 //   - A journal batch is acked only once the SessionLog stored it; batches of one session are
 //     appended in arrival order (one promise chain per session).
+//   - Every spec to the host carries the row's `sdk_session_id`, the agent's conversation as the runner
+//     last reported it (durable-object.ts `report`). Whether it can be resumed is the host's and the
+//     runner's to decide; a spec without it starts a new, empty conversation.
 //   - Slack sessions are unchanged for users: they get a `cs_` id lazily on delivery, their
 //     title/mode/model stay the Slack path's.
 

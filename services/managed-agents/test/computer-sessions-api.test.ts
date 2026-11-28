@@ -380,6 +380,10 @@ describe("writes: every one through the inbox and the drain (spec 36.2, 36.3)", 
     f.logOf(SID).entries = [entry("tn_4m8q2x7c1v9c", "turn", { input: "again", ifBusy: "queue" })];
     await f.api.drain(SID);
     expect(f.frames("api")[1]!.session).toMatchObject({ sdkSessionId: "sdk-1" });
+    // The `start` frame too: the runner it brings up is the one that resumes.
+    await created(f);
+    await Promise.all(f.pending());
+    expect(f.frames("start").at(-1)!.session).toMatchObject({ sdkSessionId: "sdk-1" });
   });
 
   it("a host's error keeps its code, status and fields through the drain and the inbox", async () => {

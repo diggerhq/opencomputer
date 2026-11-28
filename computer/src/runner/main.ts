@@ -86,6 +86,7 @@ import { effortOf, speedOf } from './model-switch.js';
 import { ensureSkills } from './skills.js';
 import { runnerModelAccess } from './model-access.js';
 import type { Harness, HarnessKind } from './harness/types.js';
+import { resumable } from './harness/claude/resume.js';
 import { nameSession } from './harness/claude/title.js';
 
 const env = process.env;
@@ -391,7 +392,9 @@ async function claimForCodex(b: Bound, a?: RunnerApi) {
   void session.thread.where();
 }
 
-if (ss) bind(ss, ss.harness === 'codex' ? await codexFor(ss) : undefined), await link(ss);
+// A cold start: Codex answers a thread it cannot resume by starting one; Claude Code is asked first (harness/claude/resume.ts).
+if (ss?.harness === 'codex') bind(ss, await codexFor(ss)), await link(ss);
+else if (ss) bind({ ...ss, sdkSessionId: await resumable(ss.sdkSessionId, ss.forkPath) }), await link(ss);
 
 // The gateway acknowledges a message on receipt with 👀 (or the assistant
 // thread status, which Slack clears when we post). Once output starts, the 👀
