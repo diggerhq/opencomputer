@@ -1,7 +1,7 @@
 name: Web
 
 # CI for web/ (the dashboard and the surface): ESLint, the TypeScript build
-# check and the unit tests. web/ reads the TypeScript SDK's source through path
+# check, the unit tests, and the browser tests of the surface over its demo host. web/ reads the TypeScript SDK's source through path
 # aliases, so SDK changes run it too. Nothing here deploys, and no job has a
 # secret.
 
@@ -60,3 +60,26 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+
+  browser:
+    name: Browser tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            sdks/typescript/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      # The app reads the SDK's source, which imports its own dependencies.
+      - name: The SDK's dependencies
+        working-directory: sdks/typescript
+        run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium webkit
+      - run: npm run e2e

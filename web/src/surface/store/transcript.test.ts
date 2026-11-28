@@ -286,3 +286,70 @@ describe('delivery', () => {
     expect(buildTranscript([...start(), note]).slice(-1)[0]).toMatchObject({ kind: 'line', text: 'From the track' })
   })
 })
+
+// A conversation is read from its end (work 139), so the events may start
+// anywhere. What they build is the end of what the whole log builds: only the
+// item at the cut may differ, and the events before it add items above.
+describe('a log read from its end', () => {
+  const sa = (id: string, status: string) => ({ id, sessionId: 'cs_1', turnId: 'w2', callId: 'k2', name: 'Find', agentType: 'Explore', background: false, status, activity: null, toolCalls: 0, tokens: 0 })
+  const log = (): ApiEvent[] => [
+    ev('message.received', 'w1', { input: 'Why is it slow?', messageId: 'm1' }),
+    ev('turn.started', 'w1'),
+    ev('reasoning.completed', 'w1', { text: 'Look at CI.' }),
+    ev('tool.started', 'w1', { callId: 'k1', title: 'Read ci.yml' }),
+    ev('tool.completed', 'w1', { callId: 'k1' }),
+    ev('message.completed', 'w1', { text: 'Looking.', blockId: 'b1' }),
+    ev('message.received', 'w1', { input: 'Check the cache too', delivery: 'steered', messageId: 'm2' }),
+    ev('turn.steered', 'w1', { messageSeq: seq }),
+    ev('tool.started', 'w1', { callId: 'k1b', title: 'Read cache' }),
+    ev('tool.failed', 'w1', { callId: 'k1b' }),
+    ev('message.completed', 'w1', { text: 'The cache never hits.', blockId: 'b2' }),
+    ev('turn.completed', 'w1'),
+    ev('session.compacted', ''),
+    ev('message.received', 'w2', { input: 'Who calls it?', messageId: 'm3' }),
+    ev('turn.started', 'w2'),
+    ev('tool.started', 'w2', { callId: 'k2', title: 'Task: Find' }),
+    ev('subagent.started', 'w2', { subagent: sa('sa_9', 'running') }),
+    ev('tool.started', 'w2', { callId: 'k3', parentCallId: 'k2', subagentId: 'sa_9', title: 'Grep' }),
+    ev('tool.completed', 'w2', { callId: 'k3', parentCallId: 'k2', subagentId: 'sa_9' }),
+    ev('subagent.ended', 'w2', { subagent: sa('sa_9', 'completed') }),
+    ev('tool.completed', 'w2', { callId: 'k2' }),
+    ev('message.completed', 'w2', { text: 'May I push?', blockId: 'b3' }),
+    ev('ask.opened', 'w2', { ask: { id: 'a9', kind: 'question' } }),
+    ev('ask.closed', 'w2', { ask: { id: 'a9', kind: 'question', answer: 'yes' } }),
+    ev('tool.started', 'w2', { callId: 'k4', title: 'Push' }),
+    ev('tool.completed', 'w2', { callId: 'k4' }),
+    ev('message.completed', 'w2', { text: 'Pushed.', blockId: 'b4' }),
+    ev('turn.completed', 'w2'),
+    ev('message.received', 'w3', { input: 'And the nightly?', messageId: 'm4' }),
+    ev('turn.started', 'w3'),
+    ev('tool.started', 'w3', { callId: 'k5', title: 'Run it' }),
+    ev('turn.cancelled', 'w3'),
+    ev('message.received', 'w4', { input: 'Again', delivery: 'queued', messageId: 'm5' }),
+    ev('turn.started', 'w4'),
+    ev('tool.started', 'w4', { callId: 'k6', title: 'Run it again' }),
+    ev('tool.completed', 'w4', { callId: 'k6' }),
+    ev('message.completed', 'w4', { text: 'Still going.', blockId: 'b5' }),
+    ev('tool.started', 'w4', { callId: 'k7', title: 'Wait' }),
+  ]
+  const keys = (items: Item[]) => items.map((i) => i.key)
+
+  it('cut at any event, it builds the end of the whole conversation', () => {
+    const all = log()
+    // Whole, and stopped at each event: a conversation is read while it runs too.
+    for (let end = 1; end <= all.length; end++) {
+      const whole = keys(buildTranscript(all.slice(0, end)))
+      for (let cut = 0; cut < end; cut++) {
+        const tail = keys(buildTranscript(all.slice(cut, end))).slice(1)
+        expect(tail, `events ${cut} to ${end}`).toEqual(tail.length ? whole.slice(-tail.length) : [])
+      }
+    }
+  })
+
+  it('a subagent or an ask whose start is before the cut waits for it', () => {
+    const all = log()
+    const from = (type: string) => buildTranscript(all.slice(all.findIndex((e) => e.type === type)))
+    expect(from('subagent.ended').some((i) => i.kind === 'subagent')).toBe(false)
+    expect(from('ask.closed').some((i) => i.kind === 'ask')).toBe(false)
+  })
+})

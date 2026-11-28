@@ -41,7 +41,6 @@ import { Tip } from './Tip'
 // The conversation of a thread or of a track's agent: messages, a turn's
 // steps (one line once it has ended), structural lines with their Undo, and asks as blocks.
 
-const PAGE = 200
 // Where the reader was in each conversation, for when they return (R44), with
 // the sizes its items were measured at so the place is found again exactly.
 const places = new Map<
@@ -639,6 +638,7 @@ function Transcript(props: {
   id?: string
 }) {
   const { sid, trackId, children, id } = props
+  const surface = useSurface()
   const convo = useConversation(sid, trackId)
   // What the agent has not read yet waits by the composer, and joins the
   // conversation where the agent reads it (work 134).
@@ -648,18 +648,15 @@ function Transcript(props: {
   )
   const ref = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
-  // Distance from the end to hold when earlier items are revealed above.
-  const hold = useRef<number | null>(null)
+  // The first row drawn: a new one means earlier items arrived above (work 139).
+  const firstKey = useRef<string | undefined>(undefined)
   const lastKey = useRef<string | undefined>(undefined)
   // Where the pane was when last looked at, by the reader or by itself.
   const seen = useRef<Seen>({ top: 0, bottom: 0, view: 0 })
 
-  const [n, setN] = useState(PAGE)
-  const shown = items.length > n ? items.slice(items.length - n) : items
-
   const rows: Row[] = []
   let day = ''
-  shown.forEach((item, i) => {
+  items.forEach((item, i) => {
     const d = dayOf(item.at)
     if (i > 0 && d !== day) rows.push({ key: `day-${item.key}`, day: item.at })
     day = d
@@ -677,8 +674,8 @@ function Transcript(props: {
       return r.day ? 36 : (r.item && ESTIMATE[r.item.kind]) || 72
     },
     getItemKey: (i) => rows[i].key,
-    // The list starts below the pane's padding and "Show earlier", which is
-    // not counted: the rows drawn either side of the view cover it.
+    // The list starts below the pane's padding and the "Earlier messages"
+    // line, which are not counted: the rows drawn either side of the view cover them.
     overscan: 6,
     initialMeasurementsCache: places.get(sid)?.sizes,
   })
@@ -711,12 +708,22 @@ function Transcript(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // The events before the window are read before the reader reaches them:
+  // within two viewports of its top.
+  const earlier = (el: HTMLDivElement) => {
+    if (convo.loaded && convo.hasEarlier && el.scrollTop < 2 * el.clientHeight)
+      void surface.earlier(sid)
+  }
+
   // After every change: follow the end only if the reader is at it. Safari
-  // has no scroll anchoring, so content revealed above is compensated here;
-  // items measured above the view are compensated by the virtualizer.
+  // has no scroll anchoring, so earlier items arriving above are compensated
+  // here, by the distance from the end; items measured above the view are
+  // compensated by the virtualizer.
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
+    // Where the pane was before this render, which `look` overwrites.
+    const fromEnd = seen.current.bottom + seen.current.view
     look(el)
     const last = items[items.length - 1]
     // The person's own new message takes them to it.
@@ -728,11 +735,16 @@ function Transcript(props: {
     )
       pinned.current = true
     lastKey.current = last?.key
-    if (hold.current !== null) {
-      el.scrollTop = el.scrollHeight - hold.current
+    const first = rows[0]?.key
+    const above = firstKey.current !== undefined && first !== firstKey.current
+    firstKey.current = first
+    if (pinned.current) toEnd(el)
+    else if (above) {
+      el.scrollTop = el.scrollHeight - fromEnd
       seen.current = at(el)
-      hold.current = null
-    } else if (pinned.current) toEnd(el)
+      remember(el, false)
+    }
+    earlier(el)
   })
 
   // The pane changing size (a growing composer, a layout change) keeps the end in view.
@@ -752,6 +764,7 @@ function Transcript(props: {
     if (!el) return
     look(el)
     remember(el, pinned.current)
+    earlier(el)
   }
 
   return (
@@ -762,22 +775,28 @@ function Transcript(props: {
           MEASURE,
         )}
         id={id}
+        data-conversation
         ref={ref}
         onScroll={onScroll}
       >
-        {items.length > n && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="flex-none self-center"
-            onClick={() => {
-              const el = ref.current
-              if (el) hold.current = el.scrollHeight - el.scrollTop
-              setN(n + PAGE)
-            }}
+        {/* Seen only by a reader who reaches the top before a page lands. */}
+        {convo.loaded && convo.hasEarlier && (
+          <div
+            className="text-faint text-meta flex-none self-center"
+            data-earlier
           >
-            Show earlier
-          </Button>
+            Earlier messages
+          </div>
+        )}
+        {/* A conversation not read yet is empty, then drawn whole at its end.
+            The mark shows only if that takes long: by its delay, not a timer. */}
+        {!convo.loaded && convo.known && rows.length === 0 && (
+          <div
+            className="animate-in fade-in-0 fill-mode-both flex flex-none justify-center py-3 delay-[400ms] duration-300"
+            data-reading
+          >
+            <Mk mark="working" />
+          </div>
         )}
         {rows.length > 0 && (
           <div

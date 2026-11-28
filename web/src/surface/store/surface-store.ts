@@ -374,7 +374,7 @@ export function createSurface(o: SurfaceOptions) {
 
   // ---- conversations ----
 
-  const { watching, begin, watch } = watchConversations({ client, store, onServer })
+  const { watching, begin, watch, earlier } = watchConversations({ client, store, onServer })
 
   // ---- start ----
 
@@ -725,6 +725,8 @@ export function createSurface(o: SurfaceOptions) {
     list,
     thread: (sid: string) => threadView(get().rows, me, sid),
     watch,
+    // One page of the events before a conversation's window (work 139).
+    earlier,
     ...actions,
     close() {
       for (const stop of stops) stop()

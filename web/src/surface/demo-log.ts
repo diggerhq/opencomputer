@@ -46,7 +46,7 @@ export function demoLog(sid: string, shape: DemoShape, me: string): ApiEvent[] {
       type,
       actor,
       data,
-    } as ApiEvent)
+    })
   }
   const tool = (turnId: string, n: number) => {
     const call = { callId: `${turnId}_c${n}`, toolName: 'Bash', title: STEPS[n % STEPS.length] }

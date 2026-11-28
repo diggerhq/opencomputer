@@ -13,6 +13,7 @@
     "build:desktop": "vite build -c vite.desktop.config.ts",
     "dev:desktop": "vite -c vite.desktop.config.ts",
     "test": "vitest run",
+    "e2e": "playwright test",
     "preview": "vite preview",
     "lint": "eslint .",
     "format": "prettier --write .",
@@ -58,6 +59,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@playwright/test": "^1.64.1",
     "@tailwindcss/vite": "^4.3.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
