@@ -1,0 +1,38 @@
+# Template: selfhost/host-install.sh --enable-offload writes it to
+# /etc/systemd/system/opencomputer-offload-reap.service. Run by
+# opencomputer-offload-reap.timer: `main.ts reap` terminates MicroVMs the
+# ledger does not account for. Runs even when the service is down (a crashed
+# or no-role service is exactly when orphans outlive their jobs); check-aws
+# still has to pass. No RuntimeDirectory: stopping this oneshot must not
+# remove the service's socket directory.
+[Unit]
+Description=OpenComputer build offload: reap orphaned MicroVMs
+After=network-online.target opencomputer-imds-deny.service opencomputer-offload-imds.service
+Wants=opencomputer-offload-imds.service
+ConditionPathExists=@SELFHOST_ETC@/offload.enabled
+
+[Service]
+Type=oneshot
+User=oc-offload
+Group=oc-offload
+WorkingDirectory=@SP_CURRENT@
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=NODE_ENV=production
+Environment=AWS_EC2_METADATA_V1_DISABLED=true
+EnvironmentFile=@SELFHOST_ENV@
+StateDirectory=opencomputer-offload
+StateDirectoryMode=0700
+UMask=0077
+ExecStartPre=@SP_CURRENT@/node_modules/.bin/tsx src/offload/main.ts check-aws
+ExecStart=@SP_CURRENT@/node_modules/.bin/tsx src/offload/main.ts reap
+TimeoutStartSec=240
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=512M

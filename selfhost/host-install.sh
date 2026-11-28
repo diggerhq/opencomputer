@@ -15,6 +15,11 @@
 #   sudo selfhost/host-install.sh --uninstall [--purge]
 #                                                   stop and remove the services; --purge also
 #                                                   the users, their data under /data and the images
+#   sudo selfhost/host-install.sh --enable-offload --bucket <name> [--image-s <image>] [--image-m <image>] [--region <region>]
+#                                                   build offload to AWS Lambda MicroVMs: only on an EC2 instance
+#                                                   with a role (selfhost/lib/aws-detect.sh); anywhere else it
+#                                                   refuses and changes nothing. With --dry-run: the plan
+#   sudo selfhost/host-install.sh --disable-offload drain build offload's MicroVMs, then remove it (its ledger is kept)
 #
 # What it installs:
 #   - Node.js 24 (the host agent), Go (only to build oc-modelproxy), git
@@ -30,6 +35,8 @@
 #     oc-modelproxy (socket-activated), the metadata block, cgroup limits;
 #     opencomputer-imds-deny.service denies the cloud metadata service to every
 #     user but root (DNS and NTP to it stay open), on every cloud
+#   - build offload (opencomputer-offload*, user oc-offload, its metadata
+#     exception), only with --enable-offload on EC2 with a role; never otherwise
 #   - for the gateway's compose stack (selfhost/compose.yaml, not started here):
 #     podman-compose in /opt/podman-compose (Ubuntu's 1.0.6 ignores compose
 #     profiles) and user oc-gateway (home /var/lib/oc-gateway, rootless Podman,
@@ -63,8 +70,9 @@
 #   NODE_MAJOR      Node.js major (default 24)
 #
 # /etc/opencomputer/selfhost.env (selfhost/selfhost.env.example) is the
-# operator's: an install never writes it, and --link-gateway rewrites only its
-# SP_GATEWAY_URL, SP_HOST_ID and SP_HOST_TOKEN lines. Without a token in it the
+# operator's: an install never writes it, --link-gateway rewrites only its
+# SP_GATEWAY_URL, SP_HOST_ID and SP_HOST_TOKEN lines, --enable-offload adds
+# SP_OFFLOAD* lines and --disable-offload removes them. Without a token in it the
 # host is installed but not started.
 #
 # Invariants:
@@ -93,7 +101,10 @@ die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 usage() { sed -n '/^#   sudo/,/^#$/p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 MODE=install DRY_RUN=0 BUILD_IMAGE=0 BUILD_GATEWAY=0 PURGE=0
-for arg in "$@"; do
+OFFLOAD_BUCKET="" OFFLOAD_IMAGE_S="" OFFLOAD_IMAGE_M="" OFFLOAD_REGION="" OFFLOAD_FLAGS=0
+ARGS=("$@")
+while (($#)); do
+  arg="$1"; shift
   case $arg in
     --dry-run) DRY_RUN=1 ;;
     --build-image) BUILD_IMAGE=1 ;;
@@ -101,23 +112,41 @@ for arg in "$@"; do
     --uninstall) MODE=uninstall ;;
     --link-gateway) MODE=link ;;
     --purge) PURGE=1 ;;
+    --enable-offload) MODE=enable-offload ;;
+    --disable-offload) MODE=disable-offload ;;
+    --bucket|--image-s|--image-m|--region)
+      (($#)) || die "$arg needs a value"
+      set -- "$arg=$1" "${@:2}" ;;
+    --bucket=*) OFFLOAD_BUCKET="${arg#*=}" OFFLOAD_FLAGS=1 ;;
+    --image-s=*) OFFLOAD_IMAGE_S="${arg#*=}" OFFLOAD_FLAGS=1 ;;
+    --image-m=*) OFFLOAD_IMAGE_M="${arg#*=}" OFFLOAD_FLAGS=1 ;;
+    --region=*) OFFLOAD_REGION="${arg#*=}" OFFLOAD_FLAGS=1 ;;
     -h|--help) usage 0 ;;
     *) echo "unknown argument: $arg" >&2; usage 2 ;;
   esac
 done
 [[ $PURGE == 0 || $MODE == uninstall ]] || die "--purge goes with --uninstall"
+[[ $OFFLOAD_FLAGS == 0 || $MODE == enable-offload ]] || die "--bucket, --image-s, --image-m and --region go with --enable-offload"
+[[ -z $OFFLOAD_BUCKET || $OFFLOAD_BUCKET =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || die "--bucket: not an S3 bucket name: $OFFLOAD_BUCKET"
+[[ -z $OFFLOAD_REGION || $OFFLOAD_REGION =~ ^[a-z]{2}(-[a-z]+)+-[0-9]+$ ]] || die "--region: not an AWS region: $OFFLOAD_REGION"
+for arg in "$OFFLOAD_IMAGE_S" "$OFFLOAD_IMAGE_M"; do
+  [[ -z $arg || $arg =~ ^[A-Za-z0-9:/._-]+$ ]] || die "--image-s/--image-m: not an image name or ARN: $arg"
+done
 
 AGENT_USER=agent
 AGENT_UID=1500            # fixed: the session image and podman-args.ts assume 1500
 HOST_USER=sp-host
 DATA=/data
 AGENT_HOME="$DATA/home/$AGENT_USER"
-SP_ROOT=/opt/slack-presence
+# OC_ROOT: tests only (selfhost/test/), a directory standing in for / under
+# the paths the offload modes touch. Unset on a real host.
+R="${OC_ROOT:-}"
+SP_ROOT="$R/opt/slack-presence"
 SP_RELEASES="$SP_ROOT/releases"
 SP_CURRENT="$SP_ROOT/current"
 SP_RUN=/run/slack-presence
 ETC=/etc/slack-presence
-SELFHOST_ETC=/etc/opencomputer
+SELFHOST_ETC="$R/etc/opencomputer"
 SELFHOST_ENV="$SELFHOST_ETC/selfhost.env"
 REPOSITORY=ghcr.io/diggerhq/computer-session
 GO_SERIES="${GO_SERIES:-1.27}"
@@ -134,7 +163,16 @@ PODMAN_COMPOSE_VERSION="${PODMAN_COMPOSE_VERSION:-1.6.0}"
 PODMAN_COMPOSE_MIN=1.1.0
 COMPOSE_VENV=/opt/podman-compose
 UNIT=slack-presence-host.service
-SYSTEMD=/etc/systemd/system
+SYSTEMD="$R/etc/systemd/system"
+LOCK="$R/run/opencomputer-host-install.lock"
+# Build offload (work/136): present only where --enable-offload passed detection and wrote the marker.
+OFFLOAD_USER=oc-offload
+OFFLOAD_MARKER="$SELFHOST_ETC/offload.enabled"
+OFFLOAD_DRAINING="$SELFHOST_ETC/offload.draining"
+OFFLOAD_STATE="$R/var/lib/opencomputer-offload"
+OFFLOAD_KEEP="$R/var/lib/opencomputer"
+OFFLOAD_UNITS=(opencomputer-offload-reap.timer opencomputer-offload-reap.service opencomputer-offload.service opencomputer-offload-imds.service)
+OFFLOAD_KEYS='^[[:space:]]*SP_OFFLOAD[A-Z0-9_]*='
 AGENT_PATH="$SP_CURRENT/bin:/usr/local/go/bin:$AGENT_HOME/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -142,7 +180,7 @@ export DEBIAN_FRONTEND=noninteractive
 # go build needs a module cache under HOME; run-command and some cloud-init shells give root none.
 export HOME="${HOME:-/root}"
 
-[[ $EUID -eq 0 || $DRY_RUN == 1 ]] || die "run as root (sudo $0 $*)"
+[[ $EUID -eq 0 || $DRY_RUN == 1 || -n $R ]] || die "run as root (sudo $0 ${ARGS[*]})"
 
 # ------------------------------------------------------------------ helpers
 
@@ -164,8 +202,12 @@ fill() {
   sed -e "s|@AGENT_USER@|$AGENT_USER|g" -e "s|@AGENT_UID@|$AGENT_UID|g" \
       -e "s|@AGENT_HOME@|$AGENT_HOME|g" -e "s|@AGENT_PATH@|$AGENT_PATH|g" \
       -e "s|@DATA@|$DATA|g" -e "s|@SP_RUN@|$SP_RUN|g" -e "s|@SP_CURRENT@|$SP_CURRENT|g" \
-      -e "s|@SELFHOST_ENV@|$SELFHOST_ENV|g" "$1"
+      -e "s|@SELFHOST_ENV@|$SELFHOST_ENV|g" -e "s|@SELFHOST_ETC@|$SELFHOST_ETC|g" \
+      -e "s|@HOST_USER@|$HOST_USER|g" "$1"
 }
+
+# run <command...>: print it and run it; with --dry-run, only print it.
+run() { if [[ $DRY_RUN == 1 ]]; then echo "would: $*"; else echo "$*"; "$@"; fi; }
 
 # Podman as the agent, in its user manager (what sandbox.sh and the host do).
 as_agent() {
@@ -348,6 +390,7 @@ Plan (nothing below has run):
      $GATEWAY_USER: lingering, podman-restart.service enabled (starts restart: always containers at boot)
      gateway image $GATEWAY_RUN ($GATEWAY_HOW)
  10. $( [[ -n "$(env_value SP_HOST_TOKEN)" ]] && echo "start $UNIT ($SELFHOST_ENV has a token)" || echo "$UNIT installed, NOT started: $SELFHOST_ENV has no SP_HOST_TOKEN yet" )
+ 11. build offload: $(offload_plan_line)
 Not installed: Docker, cloudflared, Claude Code CLI, gh, codex, playwright, a self-update timer.
 Not started: the compose stack (selfhost/compose.yaml, as $GATEWAY_USER).
 EOF
@@ -734,8 +777,7 @@ install_all() {
   resolve_image
   resolve_gateway_image
   if [[ $DRY_RUN == 1 ]]; then plan; exit 0; fi
-  exec 9>/run/opencomputer-host-install.lock
-  flock -w 3600 9 || die "another host-install.sh held the lock for an hour"
+  install_lock
   cd /
   packages
   node_js
@@ -753,6 +795,7 @@ install_all() {
   gateway_units
   gateway_image
   start_host
+  offload_upgrade
   log "done: release $SHA, image $IMAGE, gateway image $GATEWAY_RUN, $(node --version), podman $(dpkg-query -W -f='${Version}' podman), podman-compose $PODMAN_COMPOSE_VERSION"
   echo "The compose stack is $GATEWAY_USER's, in $GATEWAY_HOME/selfhost: as $GATEWAY_USER, cp .env.example .env, fill it in, start it (docs/self-hosting/single-vm.mdx), or restart it to run a new gateway image; then sudo $0 --link-gateway"
 }
@@ -793,15 +836,279 @@ link_gateway() {
   start_host
 }
 
+# ------------------------------------------------------------------ build offload (AWS only)
+# work/136 section 3. Everything below exists only on a host where
+# --enable-offload passed detection (an EC2 instance with a role) and wrote
+# $OFFLOAD_MARKER. A plain install or upgrade never adds it: with the marker it
+# re-checks detection, without it SP_OFFLOAD* lines only get a warning. The
+# service itself is computer/src/offload/main.ts (serve, check-aws, reap,
+# drain, health), run from the release as $OFFLOAD_USER.
+
+install_lock() {
+  install -d -m 0755 "$(dirname "$LOCK")"
+  exec 9>"$LOCK"
+  flock -w 3600 9 || die "another host-install.sh held the lock for an hour"
+}
+
+# offload_detect: selfhost/lib/aws-detect.sh; sets OFFLOAD_LINE, returns its code (0 aws, 1 not, 2 no role).
+offload_detect() {
+  # shellcheck source=selfhost/lib/aws-detect.sh
+  source "$HERE/lib/aws-detect.sh"
+  local rc=0
+  OFFLOAD_LINE="$(aws_detect)" || rc=$?
+  return "$rc"
+}
+
+# offload_refusal <code>: why --enable-offload will not go on, for the operator.
+offload_refusal() {
+  case $1 in
+    2) echo "this EC2 instance has no role: attach an instance profile (the offload stack's InstanceProfileArn output), then re-run" ;;
+    *) echo "build offload is AWS-only, and this host is not an EC2 instance with a role (${OFFLOAD_LINE#not-aws: })" ;;
+  esac
+}
+
+# offload_env_changes: the KEY=VALUE lines --enable-offload writes, into OFFLOAD_SET.
+# A flag replaces the key's value; without a flag a key is written only if missing.
+offload_env_changes() {   # <detected region>
+  OFFLOAD_SET=()
+  local key want
+  [[ "$(env_value SP_OFFLOAD_BACKEND)" == aws-microvm ]] || OFFLOAD_SET+=("SP_OFFLOAD_BACKEND=aws-microvm")
+  for key in BUCKET REGION IMAGE_S IMAGE_M; do
+    case $key in
+      BUCKET) want="$OFFLOAD_BUCKET" ;;
+      REGION) want="${OFFLOAD_REGION:-$( [[ -n "$(env_value SP_OFFLOAD_REGION)" ]] || echo "$1")}" ;;
+      IMAGE_S) want="$OFFLOAD_IMAGE_S" ;;
+      IMAGE_M) want="$OFFLOAD_IMAGE_M" ;;
+    esac
+    [[ -z $want || "$(env_value "SP_OFFLOAD_$key")" == "$want" ]] || OFFLOAD_SET+=("SP_OFFLOAD_$key=$want")
+  done
+  [[ -n "$(env_value SP_OFFLOAD_CONTROL)" ]] || OFFLOAD_SET+=("SP_OFFLOAD_CONTROL=/run/opencomputer-offload/control.sock")
+  [[ -n $OFFLOAD_BUCKET || -n "$(env_value SP_OFFLOAD_BUCKET)" ]] \
+    || die "--bucket is required: the offload stack's bucket (CloudFormation output BucketName)"
+  for key in IMAGE_S IMAGE_M; do
+    local flag="--${key,,}"; flag="${flag/_/-}"
+    if [[ -z "$(env_value "SP_OFFLOAD_$key")" && ! " ${OFFLOAD_SET[*]} " == *" SP_OFFLOAD_$key="* ]]; then
+      warn "no SP_OFFLOAD_$key: give $flag (selfhost/aws/build-offload-image.sh prints it); the service is not ready without it"
+    fi
+  done
+}
+
+# env_rewrite <grep -E pattern to drop> [KEY=VALUE...]: selfhost.env without the
+# matching lines, plus the given ones; root 0600, replaced in one rename.
+env_rewrite() {
+  local drop="$1" tmp; shift
+  install -d -m 0755 "$SELFHOST_ETC"
+  tmp="$(mktemp "$SELFHOST_ETC/.selfhost.env.XXXXXX")"
+  grep -Ev "$drop" "$SELFHOST_ENV" >"$tmp" 2>/dev/null || true
+  [[ $# == 0 ]] || printf '%s\n' "$@" >>"$tmp"
+  chown root:root "$tmp"; chmod 0600 "$tmp"; mv -f "$tmp" "$SELFHOST_ENV"
+}
+
+offload_units_install() {
+  local u
+  for u in "${OFFLOAD_UNITS[@]}"; do fill "$HERE/systemd/$u" > "$SYSTEMD/$u"; done
+  systemctl daemon-reload
+}
+
+# offload_start: (re)start the exception, the service and the timer. The
+# exception must hold (it is the only way oc-offload gets credentials); the
+# service may fail its check-aws and stay down, which is fail-closed.
+offload_start() {
+  systemctl enable -q opencomputer-offload-imds.service opencomputer-offload.service opencomputer-offload-reap.timer
+  systemctl restart opencomputer-offload-imds.service \
+    || die "opencomputer-offload-imds.service failed (is opencomputer-imds-deny.service active?)"
+  systemctl restart opencomputer-offload-reap.timer || warn "opencomputer-offload-reap.timer did not start"
+  if ! systemctl restart opencomputer-offload.service; then
+    warn "opencomputer-offload.service did not start: sudo journalctl -u opencomputer-offload"
+  fi
+}
+
+# One line for plan(): what an install would do about offload. Detects only
+# where offload is enabled; an ordinary host makes no request.
+offload_plan_line() {
+  if [[ -f $OFFLOAD_MARKER ]]; then
+    local rc=0; offload_detect || rc=$?
+    case $rc in
+      0) echo "enabled; $OFFLOAD_LINE; units re-templated and restarted" ;;
+      2) echo "enabled, but $OFFLOAD_LINE: units kept, the service stays down until a role is attached" ;;
+      *) echo "enabled, but $OFFLOAD_LINE: the units would be stopped (run --disable-offload)" ;;
+    esac
+  elif grep -Eq "$OFFLOAD_KEYS" "$SELFHOST_ENV" 2>/dev/null; then
+    echo "off. WARNING: $SELFHOST_ENV has SP_OFFLOAD* lines; they are ignored without --enable-offload"
+  else
+    echo "off (sudo $0 --enable-offload on an EC2 instance with a role)"
+  fi
+}
+
+# After a normal install or upgrade.
+offload_upgrade() {
+  if [[ ! -f $OFFLOAD_MARKER ]]; then
+    if grep -Eq "$OFFLOAD_KEYS" "$SELFHOST_ENV" 2>/dev/null; then
+      warn "$SELFHOST_ENV has SP_OFFLOAD* lines, but build offload is not enabled here: they are ignored. Remove them, or run sudo $0 --enable-offload on EC2"
+    fi
+    return 0
+  fi
+  log "build offload (enabled here)"
+  local rc=0; offload_detect || rc=$?
+  echo "detection: $OFFLOAD_LINE"
+  [[ -f $SP_CURRENT/src/offload/main.ts ]] || warn "this release has no src/offload/main.ts; opencomputer-offload will not start"
+  case $rc in
+    0) offload_units_install; offload_start ;;
+    2) warn "build offload is enabled but this instance has no role; the service stays down until one is attached (the reaper keeps trying)"
+       offload_units_install; offload_start ;;
+    *) warn "build offload was enabled but this host is no longer an EC2 instance with a role (${OFFLOAD_LINE#not-aws: }); stopping it. Run sudo $0 --disable-offload"
+       systemctl stop opencomputer-offload-reap.timer opencomputer-offload.service opencomputer-offload-imds.service 2>/dev/null || true ;;
+  esac
+}
+
+# --enable-offload: on an EC2 instance with a role, after a normal install.
+enable_offload() {
+  log "build offload: enable$( [[ $DRY_RUN == 1 ]] && echo ' (dry run: nothing changes)' )"
+  if [[ ! -f $SELFHOST_ENV ]]; then
+    [[ $DRY_RUN == 1 ]] || die "no $SELFHOST_ENV: install the host first ($0), then enable offload"
+    warn "no $SELFHOST_ENV yet: install the host first"
+  fi
+  if [[ $DRY_RUN == 0 ]]; then
+    systemctl cat "$UNIT" >/dev/null 2>&1 || die "$UNIT is not installed: run $0 first"
+    id "$HOST_USER" >/dev/null 2>&1 || die "no user $HOST_USER: run $0 first"
+  fi
+  if [[ ! -f $SP_CURRENT/src/offload/main.ts ]]; then
+    [[ $DRY_RUN == 1 ]] || die "the installed release has no src/offload/main.ts: update with $0 from a checkout that has build offload, then re-run"
+    warn "the installed release has no src/offload/main.ts: enabling would refuse until it does"
+  fi
+
+  local rc=0 region
+  offload_detect || rc=$?
+  echo "detection: $OFFLOAD_LINE"
+  (( rc == 0 )) || die "$(offload_refusal "$rc"). Nothing was changed."
+  read -r _ region _ <<<"$OFFLOAD_LINE"
+  offload_env_changes "$region"
+
+  if [[ $DRY_RUN == 1 ]]; then
+    cat <<EOF
+
+Plan (nothing below has run):
+  1. user $OFFLOAD_USER (system, no home, nologin, in no group but its own)
+  2. $SELFHOST_ENV: $( ((${#OFFLOAD_SET[@]})) && echo "${OFFLOAD_SET[*]}" || echo "SP_OFFLOAD* lines already set" )
+  3. units: ${OFFLOAD_UNITS[*]} (from selfhost/systemd)
+  4. marker $OFFLOAD_MARKER
+  5. start: opencomputer-offload-imds.service (oc-offload may reach the metadata service), opencomputer-offload.service, opencomputer-offload-reap.timer
+  6. restart $UNIT (if running), so sessions get offload through SP_OFFLOAD_CONTROL
+EOF
+    exit 0
+  fi
+
+  install_lock
+  if ! id "$OFFLOAD_USER" >/dev/null 2>&1; then
+    useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --user-group "$OFFLOAD_USER"
+  fi
+  id -nG "$OFFLOAD_USER" | grep -qwE "$AGENT_USER|$HOST_USER" \
+    && die "$OFFLOAD_USER is in group $AGENT_USER or $HOST_USER; it must hold the role's credentials alone"
+  if ((${#OFFLOAD_SET[@]})); then
+    local kv drop='^$'
+    for kv in "${OFFLOAD_SET[@]}"; do drop+="|^[[:space:]]*${kv%%=*}="; done
+    env_rewrite "$drop" "${OFFLOAD_SET[@]}"
+    echo "$SELFHOST_ENV: ${OFFLOAD_SET[*]}"
+  fi
+  offload_units_install
+  rm -f "$OFFLOAD_DRAINING"
+  printf 'enabled %s by host-install.sh: %s\n' "$(date -u +%FT%TZ)" "$OFFLOAD_LINE" >"$OFFLOAD_MARKER"
+  chmod 0644 "$OFFLOAD_MARKER"
+  offload_start
+  # The host relays builds to the service only while SP_OFFLOAD_CONTROL is in its environment.
+  systemctl try-restart "$UNIT" || warn "$UNIT did not restart; sessions get offload after: sudo systemctl restart $UNIT"
+  sleep 3
+  systemctl --no-pager --lines=10 status opencomputer-offload.service || true
+  log "build offload enabled ($OFFLOAD_LINE)"
+  echo "The service builds its MicroVM images on first start; it advertises offload to the gateway once ready."
+  echo "Follow it with: sudo journalctl -fu opencomputer-offload"
+}
+
+# --disable-offload, and the first step of --uninstall: drain while the role
+# still works, then remove everything offload installed. Removal never depends
+# on AWS answering. The ledger is kept: on a host that lost its role, it is the
+# only record of what may still run.
+disable_offload() {
+  local u present=0 drained=1 kept=""
+  [[ -f $OFFLOAD_MARKER ]] && present=1
+  for u in "${OFFLOAD_UNITS[@]}"; do [[ ! -f $SYSTEMD/$u ]] || present=1; done
+  id "$OFFLOAD_USER" >/dev/null 2>&1 && present=1
+  grep -Eq "$OFFLOAD_KEYS" "$SELFHOST_ENV" 2>/dev/null && present=1
+  if [[ $present == 0 ]]; then
+    [[ $MODE != disable-offload ]] || echo "build offload is not enabled here; nothing to do"
+    return 0
+  fi
+  log "build offload: disable$( [[ $DRY_RUN == 1 ]] && echo ' (dry run: nothing changes)' )"
+
+  # 1. Drain: new submits refused, then `main.ts drain` as oc-offload, with the
+  # service's environment (systemd reads selfhost.env; nothing on a command line).
+  if [[ -f $SYSTEMD/opencomputer-offload.service ]] && id "$OFFLOAD_USER" >/dev/null 2>&1 \
+     && [[ -f $SP_CURRENT/src/offload/main.ts ]]; then
+    run install -m 0644 /dev/null "$OFFLOAD_DRAINING"
+    if ! run timeout 180 systemd-run --quiet --wait --pipe --collect --unit=opencomputer-offload-drain \
+         -p User="$OFFLOAD_USER" -p Group="$OFFLOAD_USER" -p EnvironmentFile="$SELFHOST_ENV" \
+         -p Environment=AWS_EC2_METADATA_V1_DISABLED=true -p Environment=PATH=/usr/local/bin:/usr/bin:/bin \
+         -p WorkingDirectory="$SP_CURRENT" -p StateDirectory=opencomputer-offload \
+         "$SP_CURRENT/node_modules/.bin/tsx" src/offload/main.ts drain --timeout 120; then
+      drained=0
+      warn "drain failed (no role, no network, or the service's code is missing); removing offload anyway"
+    fi
+  else
+    echo "no offload service to drain"
+  fi
+
+  # 2. Units, then the exception by user and by uid (in case the unit is already gone).
+  for u in "${OFFLOAD_UNITS[@]}"; do
+    [[ ! -f $SYSTEMD/$u ]] || run systemctl disable --now "$u" 2>/dev/null || true
+  done
+  local uid; uid="$(id -u "$OFFLOAD_USER" 2>/dev/null || true)"
+  if command -v iptables >/dev/null && iptables -S OC-IMDS >/dev/null 2>&1; then
+    local who
+    for who in "$OFFLOAD_USER" $uid; do
+      while iptables -C OC-IMDS -m owner --uid-owner "$who" -j RETURN 2>/dev/null; do
+        run iptables -D OC-IMDS -m owner --uid-owner "$who" -j RETURN || break
+        [[ $DRY_RUN == 0 ]] || break
+      done
+    done
+  fi
+  for u in "${OFFLOAD_UNITS[@]}"; do run rm -f "$SYSTEMD/$u"; done
+  [[ $DRY_RUN == 1 ]] || systemctl daemon-reload || warn "systemctl daemon-reload failed; continuing"
+
+  # 3. The ledger, root-only, until --purge.
+  if [[ -d $OFFLOAD_STATE ]] && [[ -n "$(ls -A "$OFFLOAD_STATE" 2>/dev/null)" ]]; then
+    kept="$OFFLOAD_KEEP/offload-ledger-$(date -u +%Y%m%dT%H%M%SZ)"
+    run install -d -m 0700 "$OFFLOAD_KEEP" "$kept"
+    run cp -a "$OFFLOAD_STATE/." "$kept/"
+    run chown -R root:root "$kept"
+  fi
+  run rm -rf "$OFFLOAD_STATE"
+
+  # 4. Settings, markers, user.
+  if grep -Eq "$OFFLOAD_KEYS" "$SELFHOST_ENV" 2>/dev/null; then
+    if [[ $DRY_RUN == 1 ]]; then echo "would: remove the SP_OFFLOAD* lines from $SELFHOST_ENV"
+    else env_rewrite "$OFFLOAD_KEYS"; echo "removed the SP_OFFLOAD* lines from $SELFHOST_ENV"; fi
+  fi
+  run rm -f "$OFFLOAD_MARKER" "$OFFLOAD_DRAINING"
+  # The host drops its offload relay once SP_OFFLOAD_CONTROL is gone from its environment.
+  if [[ $MODE == disable-offload ]]; then run systemctl try-restart "$UNIT" || warn "$UNIT did not restart: sudo systemctl restart $UNIT"; fi
+  if id "$OFFLOAD_USER" >/dev/null 2>&1; then run userdel "$OFFLOAD_USER" || warn "userdel $OFFLOAD_USER failed; remove it by hand"; fi
+  if getent group "$OFFLOAD_USER" >/dev/null 2>&1; then run groupdel "$OFFLOAD_USER" || true; fi
+
+  if [[ $drained == 0 ]]; then
+    warn "MicroVMs this host started may still run until their maximum duration (at most about 8 h). Stop them from the AWS console or CLI on another machine${kept:+; the ledger ($kept) lists them}"
+  fi
+  [[ -z $kept ]] || echo "kept: the offload ledger in $kept (root only); --uninstall --purge removes it"
+  echo "In AWS: the offload CloudFormation stack and its bucket are still there. Empty the bucket (it is retained), then delete the stack."
+}
+
 # ------------------------------------------------------------------ uninstall
 # Stops and removes what install wrote. Keeps packages, Node and Go (shared
 # with whatever else the machine runs), and the operator's selfhost.env and
 # /data unless --purge.
 uninstall() {
   log "uninstall$( [[ $PURGE == 1 ]] && echo ' --purge' )"
-  local say=echo
-  [[ $DRY_RUN == 1 ]] && { say="echo would:"; echo "(dry run: nothing changes)"; }
-  run() { $say "$*"; [[ $DRY_RUN == 1 ]] || "$@"; }
+  [[ $DRY_RUN == 0 ]] || echo "(dry run: nothing changes)"
+  disable_offload
 
   local units=("$UNIT" slack-presence-imds-block.service opencomputer-imds-deny.service sp-host-imds-block.service
                oc-modelproxy.service oc-modelproxy-api.socket oc-modelproxy-control.socket slack-presence-limits.service)
@@ -844,7 +1151,7 @@ uninstall() {
     systemctl is-active -q "user@$AGENT_UID.service" 2>/dev/null && run systemctl stop "user@$AGENT_UID.service" || true
     local d
     for d in people home/"$AGENT_USER" containers state journals; do run rm -rf "${DATA:?}/$d"; done
-    run rm -rf "$SELFHOST_ENV" /var/lib/sp-host
+    run rm -rf "$SELFHOST_ENV" /var/lib/sp-host "$OFFLOAD_KEEP"/offload-ledger-*
     for u in "$HOST_USER" modelproxy "$AGENT_USER"; do
       id "$u" >/dev/null 2>&1 && run userdel "$u"
       getent group "$u" >/dev/null && run groupdel "$u"
@@ -901,4 +1208,6 @@ case $MODE in
   install) install_all ;;
   uninstall) uninstall ;;
   link) link_gateway ;;
+  enable-offload) enable_offload ;;
+  disable-offload) disable_offload ;;
 esac

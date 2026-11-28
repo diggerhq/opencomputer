@@ -1,0 +1,13 @@
+# Template: selfhost/host-install.sh --enable-offload writes it to
+# /etc/systemd/system/opencomputer-offload-reap.timer: the reaper every 5 min.
+[Unit]
+Description=OpenComputer build offload: reap orphaned MicroVMs every 5 min
+ConditionPathExists=@SELFHOST_ETC@/offload.enabled
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+
+[Install]
+WantedBy=timers.target
