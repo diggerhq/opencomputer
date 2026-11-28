@@ -151,27 +151,36 @@ image_input() {
     "$URI" "$2" "oc-offload-$1-$ABI-$HASH"
 }
 
+# Get, List and Update take the image's ARN, not its name (Create takes the name).
+if ((DRY_RUN)); then
+  PARTITION=aws ACCOUNT="<account>"
+else
+  read -r ACCOUNT CALLER < <(aws_q sts get-caller-identity --query '[Account,Arn]' --output text)
+  PARTITION="$(cut -d: -f2 <<<"$CALLER")"
+fi
+
 declare -A ARN VERSION
 IFS=, read -r -a tiers <<< "$TIERS"
 for t in "${tiers[@]}"; do
   tier=${t%%:*} mib=${t#*:}
   name="oc-offload-$tier-$ABI"   # the instance policy allows only oc-offload-*
+  ident="arn:$PARTITION:lambda:$REGION:$ACCOUNT:microvm-image:$name"
   if ((DRY_RUN)); then
-    aws_q lambda-microvms get-microvm-image --image-identifier "$name" --query imageArn --output text
+    aws_q lambda-microvms get-microvm-image --image-identifier "$ident" --query imageArn --output text
     echo "# if $name does not exist:"
     aws_q lambda-microvms create-microvm-image --cli-input-json \
       "{\"name\":\"$name\",$(image_input "$tier" "$mib"),\"tags\":{\"opencomputer:offload\":\"$STACK\",\"opencomputer:release\":\"$HASH\"}}"
     echo "# else, unless a version already has codeArtifact $URI:"
-    aws_q lambda-microvms list-microvm-image-versions --image-identifier "$name" \
+    aws_q lambda-microvms list-microvm-image-versions --image-identifier "$ident" \
       --query "items[?codeArtifact.uri=='$URI' && state!='FAILED'].[imageVersion,state]" --output text
-    aws_q lambda-microvms update-microvm-image --cli-input-json "{\"imageIdentifier\":\"$name\",$(image_input "$tier" "$mib")}"
+    aws_q lambda-microvms update-microvm-image --cli-input-json "{\"imageIdentifier\":\"$ident\",$(image_input "$tier" "$mib")}"
     ARN[$tier]="<imageArn of $name>" VERSION[$tier]="<imageVersion>"
     continue
   fi
 
-  if out="$(aws_q lambda-microvms get-microvm-image --image-identifier "$name" --query imageArn --output text 2>&1)"; then
+  if out="$(aws_q lambda-microvms get-microvm-image --image-identifier "$ident" --query imageArn --output text 2>&1)"; then
     ARN[$tier]=$out
-    have="$(aws_q lambda-microvms list-microvm-image-versions --image-identifier "$name" \
+    have="$(aws_q lambda-microvms list-microvm-image-versions --image-identifier "$ident" \
       --query "items[?codeArtifact.uri=='$URI' && state!='FAILED'].imageVersion | [0]" --output text)"
     if [[ -n $have && $have != None ]]; then
       log "$name: builder $HASH is already version $have"
@@ -180,7 +189,7 @@ for t in "${tiers[@]}"; do
     fi
     log "$name: new version ($mib MiB)"
     read -r "ARN[$tier]" "VERSION[$tier]" < <(aws_q lambda-microvms update-microvm-image \
-      --cli-input-json "{\"imageIdentifier\":\"$name\",$(image_input "$tier" "$mib")}" --query '[imageArn,imageVersion]' --output text)
+      --cli-input-json "{\"imageIdentifier\":\"$ident\",$(image_input "$tier" "$mib")}" --query '[imageArn,imageVersion]' --output text)
   elif [[ $out == *ResourceNotFoundException* ]]; then
     log "$name: create ($mib MiB)"
     read -r "ARN[$tier]" "VERSION[$tier]" < <(aws_q lambda-microvms create-microvm-image --cli-input-json \
@@ -194,7 +203,7 @@ done
 # ---- wait for every tier's version (the spike saw 3.5-4.5 min per build)
 if ((DRY_RUN)); then
   echo "# then poll every ${POLL_SECONDS}s until SUCCESSFUL, per tier:"
-  aws_q lambda-microvms get-microvm-image-version --image-identifier "oc-offload-${tiers[0]%%:*}-$ABI" \
+  aws_q lambda-microvms get-microvm-image-version --image-identifier "arn:$PARTITION:lambda:$REGION:$ACCOUNT:microvm-image:oc-offload-${tiers[0]%%:*}-$ABI" \
     --image-version '<imageVersion>' --query '[state,stateReason]' --output text
 else
   deadline=$((SECONDS + POLL_LIMIT_SECONDS))
