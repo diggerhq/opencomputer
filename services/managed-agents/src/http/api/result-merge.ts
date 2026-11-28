@@ -81,7 +81,8 @@ export async function resultMerge(c: Call): Promise<Response> {
   const pull = await pullAccess(c.env, c.p, started.result, WRITE, out);
   if (pull instanceof Response) return pull;
   const { github } = pull;
-  const read = await readPull(github, pull.number);
+  // The checks of the commit they saw are read beside the pull request: if it has moved, the merge is refused anyway.
+  const [read, seen] = await Promise.all([readPull(github, pull.number), typeof head === "string" ? checksOf(github, head) : null]);
   if (!read.ok) return failedOf(c, pull.unavailable, read);
   const { pr } = read;
   const base = pr.base?.ref;
@@ -95,7 +96,7 @@ export async function resultMerge(c: Call): Promise<Response> {
   if (pr.draft) return refused(out, "draft", "The pull request is a draft.");
   if (typeof head === "string" && head !== sha) return refused(out, "changed", "The pull request changed since you looked.", { head: sha });
   if (pr.mergeable === false) return refused(out, "conflicts", `The pull request conflicts with ${base}.`);
-  const checks = await checksOf(github, sha);
+  const checks = seen ?? (await checksOf(github, sha));
   if (checks.state === "failing") return refused(out, "checks_failing", `A check did not pass: ${checks.name}.`, { check: checks.name });
   if (checks.state === "running") return refused(out, "checks_running", `Checks are still running: ${checks.name}.`, { check: checks.name });
 
@@ -109,12 +110,14 @@ export async function resultMerge(c: Call): Promise<Response> {
     if (merged.status === 409) return refused(out, "changed", "The pull request changed since you looked.");
     return refused(out, "blocked", merged.message);
   }
-  // One promise past the response: a connection dropped now loses neither the branch's tidying nor the record.
-  const done = (async () => {
-    const branchDeleted = await deleteMergedBranch(github, pr).catch(() => false);
-    return record(c, "result.merge", args, { merge: { number, base, head: sha, method: merged.method, sha: merged.sha, branchDeleted } });
-  })();
-  c.waitUntil?.(done.catch(() => undefined));
+  // The reply does not wait for the branch: it says the merge, and the branch's tidying is added to the record after.
+  const merge = { number, base, head: sha, method: merged.method, sha: merged.sha, branchDeleted: false };
+  const done = record(c, "result.merge", args, { merge });
+  const tidied = (async () => {
+    await done.catch(() => undefined);
+    if (await deleteMergedBranch(github, pr).catch(() => false)) await c.org().mutate(c.p, { name: "result.merge", args, merge: { ...merge, branchDeleted: true } });
+  })().catch(() => undefined);
+  c.waitUntil?.(tidied);
   return done;
 }
 
@@ -160,8 +163,8 @@ export async function resultRevert(c: Call): Promise<Response> {
 
   // GitHub works out whether a new pull request merges a moment after it opens.
   let read = await readPull(github, revert.number);
-  for (let i = 0; i < 4 && read.ok && !read.pr.merged && read.pr.mergeable === null; i++) {
-    await wait(1_000);
+  for (let i = 0; i < 10 && read.ok && !read.pr.merged && read.pr.mergeable === null; i++) {
+    await wait(400);
     read = await readPull(github, revert.number);
   }
   if (!read.ok) return left(read.message);
