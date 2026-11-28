@@ -794,7 +794,7 @@ function DealBadge() {
 }
 
 // The Black Friday deal above the plans: the offer with its countdown and
-// spots left while this org can claim it, the claim once it has, or why a
+// price lock while this org can claim it, the claim once it has, or why a
 // `?promo=` link doesn't apply. Nothing when the deal is unknown (the endpoint
 // failed or 404s), so the page shows normal pricing.
 function PromoPanel({
@@ -854,15 +854,9 @@ function PromoPanel({
           <div className="sm:text-right">
             <div className="text-muted-foreground text-xs">Ends in</div>
             <PromoCountdown endsAt={promo.endsAt} />
-            {promo.earlyLeft > 0 ? (
-              <div className="text-muted-foreground mt-1 font-mono text-[11px]">
-                {promo.earlyLeft} of {promo.earlyCap} 12-month spots left
-              </div>
-            ) : (
-              <div className="text-muted-foreground mt-1 font-mono text-[11px]">
-                3-month price lock
-              </div>
-            )}
+            <div className="text-muted-foreground mt-1 font-mono text-[11px]">
+              {promo.earlyLeft > 0 ? '12-month' : '3-month'} price lock
+            </div>
           </div>
         </div>
       </Panel>

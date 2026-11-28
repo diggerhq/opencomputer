@@ -26,7 +26,7 @@ import {
   promoBannerKey,
   promoHref,
   promoOfferText,
-  promoSpotsText,
+  promoLockText,
   promoTermText,
   promoWelcomeKey,
 } from '@/lib/promo'
@@ -89,7 +89,7 @@ function PromoBannerImpl() {
         <span className="font-semibold">Black Friday:</span>{' '}
         {promoOfferText(deal)}.{' '}
         <span className="hidden opacity-80 sm:inline">
-          {promoSpotsText(deal)} · ends in{' '}
+          {promoLockText(deal)} · ends in{' '}
           <BannerCountdown endsAt={deal.endsAt} />
         </span>{' '}
         <Link
