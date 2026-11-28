@@ -1,4 +1,4 @@
-import type { Channel, ClientFrame, Principal, ServerFrame } from '@opencomputer/sdk/computer'
+import type { Channel, ClientFrame, Principal, ServerFrame, UploadRequest } from '@opencomputer/sdk/computer'
 import type { Host, Location } from './host'
 import { NOWHERE } from './host'
 
@@ -125,6 +125,34 @@ export function browserParts(): Pick<Host, 'notify' | 'badge' | 'openExternal' |
   }
 }
 
+// A PUT whose progress is reported (work 126, K3): `fetch` cannot say how much
+// of a body has gone, XMLHttpRequest can. The reply is read back as a Response
+// so the client treats it as any other. A signed URL is sent to with
+// `credentials: false`: no cookie, and no header but the ones it was signed with.
+export function xhrUpload(url: string, req: UploadRequest, o?: { credentials?: boolean; headers?: Record<string, string> }): Promise<Response> {
+  return new Promise<Response>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open(req.method, url)
+    xhr.withCredentials = o?.credentials ?? true
+    for (const [k, v] of Object.entries({ ...req.headers, ...o?.headers })) xhr.setRequestHeader(k, v)
+    xhr.upload.onprogress = (e) => req.onProgress(e.loaded, e.lengthComputable ? e.total : req.body.size)
+    xhr.onload = () => {
+      const headers = new Headers()
+      for (const line of xhr.getAllResponseHeaders().trim().split(/\r?\n/)) {
+        const i = line.indexOf(':')
+        if (i > 0) headers.append(line.slice(0, i).trim(), line.slice(i + 1).trim())
+      }
+      // A 204 may carry no body; `Response` refuses one with a null body status.
+      const empty = xhr.status === 204 || xhr.status === 205 || xhr.status === 304
+      resolve(new Response(empty ? null : xhr.responseText, { status: xhr.status, headers }))
+    }
+    xhr.onerror = () => reject(new TypeError('network error'))
+    xhr.onabort = () => reject(new DOMException('aborted', 'AbortError'))
+    req.signal.addEventListener('abort', () => xhr.abort(), { once: true })
+    xhr.send(req.body)
+  })
+}
+
 export function webHost(o: {
   principal: Principal
   name?: string
@@ -150,6 +178,7 @@ export function webHost(o: {
         }
         return reply
       },
+      uploadTo: (url, req) => xhrUpload(url, req, { credentials: false }),
     },
     connect: () => socketChannel(ws, ['oc.live.v1']),
     location: urlLocation(o.base),

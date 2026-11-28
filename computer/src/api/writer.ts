@@ -9,7 +9,7 @@
 // cursor exactly once and in order, then live ones, and is detached rather
 // than allowed to fall unboundedly behind.
 
-import type { ApiActor, ApiError, JournalDelta, JournalEvent } from '../protocol.js';
+import type { ApiActor, ApiAttachment, ApiError, JournalDelta, JournalEvent } from '../protocol.js';
 
 /**
  * The writer call that journals a host-side event (the host's wire-link: terminals, uploads). Not a
@@ -25,6 +25,8 @@ export interface CallContext {
   member: string;
   idempotencyKey?: string;
   requestId?: string;
+  /** A `turns.send`'s attachments (work 126): the gateway's `api` frame carries them beside the params, as Org's metadata, never the sender's claim. */
+  attachments?: ApiAttachment[];
 }
 
 /** A call's outcome: the method's result body (schema-methods.ts METHODS[method].result), or an API error. */

@@ -1,21 +1,20 @@
-import { lazy, Suspense, useState, type ReactNode } from 'react'
-import type {
-  Answer,
-  Ask,
-  DocRow,
-  ProposalRow,
-} from '@opencomputer/sdk/computer'
+import { lazy, Suspense, useState } from 'react'
+import { ChevronRight } from 'lucide-react'
+import type { DocRow, ProposalRow } from '@opencomputer/sdk/computer'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 import { useS, useSurface, useTrack } from '../hooks'
-import { askLine, type ThreadView, type TrackView } from '../store/views'
+import type { TrackTab } from '../store/surface-state'
+import type { ThreadView, TrackView } from '../store/views'
 import { I } from './icons'
 import { ACTS, BLOCK, COMPOSER, HD, IN, LEFT, MEASURE } from './pane-classes'
 import { resultDetail, resultTitle } from './result-text'
 import { useConfirm } from './use-confirm'
 import { Mk } from './Mark'
+import { MergeButton } from './MergeButton'
 import { ResultIcon } from './ResultIcon'
+import { GROUP, ThreadRow } from './ThreadRows'
 import { Rich } from './Rich'
 import { Composer } from './Composer'
 import { MenuButton, type MenuItem } from './MenuButton'
@@ -31,7 +30,8 @@ const DocEditor = lazy(() =>
 const ROW =
   'hover:bg-accent focus-visible:bg-accent rounded-md outline-none transition-colors'
 
-// The track pane (S2): name, stand, and one of Activity, Doc or Results.
+// The track pane (S2): name, stand, and one of Activity, Threads, Doc or
+// Results.
 
 export function TrackPane({ tid }: { tid: string }) {
   const surface = useSurface()
@@ -41,6 +41,7 @@ export function TrackPane({ tid }: { tid: string }) {
   const [confirm, dialog] = useConfirm()
   if (!track) return <div className={IN} data-pane="track" />
 
+  const nthreads = track.threads.filter((t) => !t.done).length
   const nres = [...track.threads, ...track.earlierThreads].reduce(
     (n, t) => n + t.results.length,
     0,
@@ -151,11 +152,14 @@ export function TrackPane({ tid }: { tid: string }) {
         <Tabs
           value={tab}
           onValueChange={(v) =>
-            surface.setTrackTab(tid, v as 'activity' | 'doc' | 'results')
+            surface.setTrackTab(tid, v as TrackTab)
           }
         >
           <TabsList variant="line">
             <TabsTrigger value="activity">Activity</TabsTrigger>
+            <TabsTrigger value="threads">
+              Threads{nthreads ? ` · ${nthreads}` : ''}
+            </TabsTrigger>
             <TabsTrigger value="doc">Doc</TabsTrigger>
             <TabsTrigger value="results">
               Results{nres ? ` · ${nres}` : ''}
@@ -167,6 +171,8 @@ export function TrackPane({ tid }: { tid: string }) {
         <Doc key={tid} track={track} />
       ) : tab === 'results' ? (
         <Results track={track} />
+      ) : tab === 'threads' ? (
+        <Threads track={track} />
       ) : (
         <Activity track={track} />
       )}
@@ -184,52 +190,10 @@ const focus = (el: HTMLElement | null) => {
 function Activity({ track }: { track: TrackView }) {
   const surface = useSurface()
   const tid = track.id
-  const open = useS((s) => s.loc.thread)
-  const earlierOpen = useS((s) => !!s.trackEarlierOpen[tid])
   const blocks = track.proposals.filter((p) => p.type !== 'edit')
+  const waiting = track.threads.filter((t) => t.mark === 'blocked').length
   return (
     <>
-      {(track.threads.length > 0 || track.earlier > 0) && (
-        // Held to part of the pane, so the agent's conversation and composer
-        // stay in sight. It scrolls down, never sideways.
-        <div className="flex max-h-[40%] flex-none flex-col gap-2 overflow-x-hidden overflow-y-auto border-b px-4 pt-3 pb-1">
-          {track.threads.map((t) => (
-            <Card key={t.id} thread={t} sel={open === t.id} />
-          ))}
-          {track.earlier > 0 && (
-            <button
-              className="text-faint hover:text-muted-foreground text-meta self-start pt-1 pb-2 text-left outline-none focus-visible:underline"
-              aria-expanded={earlierOpen}
-              onClick={() => surface.toggleEarlier(tid)}
-            >
-              {track.earlier} earlier
-            </button>
-          )}
-          {earlierOpen && track.earlierThreads.length > 0 && (
-            <div className="flex flex-col pb-2">
-              {track.earlierThreads.map((t) => (
-                <button
-                  key={t.id}
-                  className={cn(
-                    ROW,
-                    'text-muted-foreground hover:text-foreground text-meta -mx-2 flex h-6.5 items-baseline gap-2 px-2 text-left',
-                  )}
-                  onClick={() => surface.openThread(t.id)}
-                >
-                  <span className="max-w-[60%] flex-none truncate">
-                    {t.title}
-                  </span>
-                  {t.outcome && (
-                    <small className="text-faint min-w-0 truncate text-xs">
-                      {t.outcome}
-                    </small>
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
       <Conversation sid={track.agentSession} trackId={tid} id="kconv">
         {blocks.map((p) => (
           <div key={p.id} className={BLOCK}>
@@ -263,13 +227,26 @@ function Activity({ track }: { track: TrackView }) {
           </div>
         ))}
       </Conversation>
+      {waiting > 0 && (
+        // The threads that wait on the person, a click from the Threads tab,
+        // however far up the conversation they joined.
+        <div className="-mb-1 flex flex-none justify-center pt-2">
+          <button
+            className="bg-status-pending-bg border-status-pending/25 hover:border-status-pending/50 text-meta inline-flex h-7 items-center gap-2 rounded-full border px-3 transition-colors outline-none focus-visible:underline"
+            onClick={() => surface.setTrackTab(tid, 'threads')}
+          >
+            <Mk mark="blocked" small />
+            {waiting === 1 ? '1 thread waits' : `${waiting} threads wait`} on
+            you
+          </button>
+        </div>
+      )}
       <Composer
         draftKey={`k:${tid}`}
         placeholder="Message this track…"
         onSend={(text, e) =>
-          surface.send(track.agentSession, text, { now: e.meta })
+          surface.send(track.agentSession, text, { now: e.meta, draftKey: `k:${tid}` })
         }
-        onAttach={(text, files) => surface.sendWithFiles(track.agentSession, text, files)}
         className={COMPOSER}
         tools={
           track.agent &&
@@ -306,173 +283,75 @@ function ProposalButtons({ p }: { p: ProposalRow }) {
   )
 }
 
-type Choice = { label: string; primary?: boolean; answer: Answer }
+// ---- Threads ----
 
-// The choices a card can offer (R16): an approval, or one question with one
-// pick. Anything richer is answered in the thread.
-function choices(ask: Ask): Choice[] {
-  if (ask.kind === 'approval')
-    return [
-      { label: 'Allow', primary: true, answer: { decision: 'allow' } },
-      { label: "Don't allow", answer: { decision: 'deny' } },
-    ]
-  if (ask.kind !== 'question') return []
-  const qs = (ask.question?.questions ?? []) as {
-    id: string
-    options?: { label: string }[]
-    multiSelect?: boolean
-  }[]
-  const q = qs[0]
-  if (qs.length !== 1 || q.multiSelect || !q.options?.length) return []
-  return q.options.map((o) => ({
-    label: o.label,
-    answer: { answers: [{ questionId: q.id, choices: [o.label], text: null }] },
-  }))
-}
+// Its threads by what they need: the person first, then what is ready, then
+// what is still going. Done is folded away.
+const GROUPS = [
+  ['Waiting on you', (t: ThreadView) => t.mark === 'blocked'],
+  ['Ready for you', (t: ThreadView) => t.mark === 'ready'],
+  ['Working', (t: ThreadView) => t.mark === 'working'],
+  ['Quiet', (t: ThreadView) => !t.mark && !t.done],
+] as const
 
-// A result is settled once nothing more comes of it: a pull request merged or
-// closed, a preview stopped.
-const settled = (r: ThreadView['results'][number]) =>
-  r.state === 'merged' || r.state === 'closed' || r.state === 'stopped'
+const GH = 'text-faint mt-4 mb-1.5 flex items-center gap-1.5 text-xs font-medium'
 
-// The one result a card shows: the one waiting on the user, else the newest
-// unsettled one. The rest are in the Results view, a click away.
-function cardResult(t: ThreadView) {
-  return (
-    t.results.find((r) => r.id === t.readyResult) ??
-    [...t.results].reverse().find((r) => !settled(r)) ??
-    null
-  )
-}
-
-const CHIP =
-  'hover:bg-accent hover:text-foreground -mx-1.5 -my-0.5 inline-flex items-center gap-1.5 rounded-sm px-1.5 py-0.5 whitespace-nowrap'
-
-function Card({ thread: t, sel }: { thread: ThreadView; sel: boolean }) {
+function Threads({ track }: { track: TrackView }) {
   const surface = useSurface()
-  const ask = t.mark === 'blocked' ? t.ask : null
-  const question = ask ? askLine(ask) : null
-  const opts = ask ? choices(ask) : []
-  const shown = cardResult(t)
-  const more = t.results.length - (shown ? 1 : 0)
-  const body: ReactNode = (
-    <>
-      <div className="flex items-baseline gap-2">
-        <Mk mark={t.mark} />
-        <span
-          className={cn(
-            'text-reading min-w-0 truncate',
-            t.unread ? 'font-semibold' : 'font-medium',
-          )}
-        >
-          {t.title}
-        </span>
-        {/* The mark says working and ready; only what waits on the person
-            is also said in words. */}
-        {t.mark === 'blocked' && (
-          <span className="text-meta text-status-pending ml-auto flex-none whitespace-nowrap">
-            {t.word}
-          </span>
-        )}
-      </div>
-      <div className="text-muted-foreground text-meta mt-1 line-clamp-2 wrap-anywhere">
-        {t.line ?? 'Just started'}
-      </div>
-      {ask && (question !== t.line || opts.length > 0) && (
-        // An approval's line is often a command with nowhere to break.
-        <div className="text-meta mt-2 wrap-anywhere">
-          {question !== t.line && <div>{question}</div>}
-          {opts.length > 0 && (
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              {opts.map((o) => (
-                <Button
-                  key={o.label}
-                  size="xs"
-                  variant={o.primary ? 'default' : 'outline'}
-                  className="h-auto min-h-6 max-w-full py-0.5 text-left whitespace-normal"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    surface.answer(t.id, ask.id, o.answer)
-                  }}
-                  onKeyDown={(e) => e.stopPropagation()}
-                >
-                  {o.label}
-                </Button>
+  const tid = track.id
+  const doneOpen = useS((s) => !!s.trackEarlierOpen[tid])
+  const done = [...track.threads.filter((t) => t.done), ...track.earlierThreads]
+  const ndone = track.threads.filter((t) => t.done).length + track.earlier
+  return (
+    <div className={cn('flex-1 overflow-auto pt-1 pb-6 *:max-w-180', MEASURE)}>
+      {GROUPS.map(([name, test]) => {
+        const ts = track.threads.filter(test)
+        if (!ts.length) return null
+        return (
+          <section key={name}>
+            <h3
+              className={cn(GH, name === 'Waiting on you' && 'text-status-pending')}
+            >
+              {name}
+              <span className="text-faint tabular-nums">{ts.length}</span>
+            </h3>
+            <div className={GROUP}>
+              {ts.map((t) => (
+                <ThreadRow key={t.id} thread={t} time />
+              ))}
+            </div>
+          </section>
+        )
+      })}
+      {ndone > 0 && (
+        <section>
+          <button
+            className={cn(GH, 'hover:text-muted-foreground outline-none focus-visible:underline')}
+            aria-expanded={doneOpen}
+            onClick={() => surface.toggleEarlier(tid)}
+          >
+            <ChevronRight
+              className={cn('size-3 transition-transform', doneOpen && 'rotate-90')}
+            />
+            Done
+            <span className="tabular-nums">{ndone}</span>
+          </button>
+          {doneOpen && done.length > 0 && (
+            <div className={GROUP}>
+              {done.map((t) => (
+                <ThreadRow key={t.id} thread={t} time />
               ))}
             </div>
           )}
-        </div>
+        </section>
       )}
-      {t.results.length > 0 && (
-        <div className="text-muted-foreground text-meta mt-2 flex items-center gap-3">
-          {shown && (
-            <span
-              className={cn(CHIP, 'min-w-0')}
-              role="button"
-              tabIndex={-1}
-              onKeyDown={(e) => {
-                if (e.key !== 'Enter') return
-                e.stopPropagation()
-                surface.openResult(shown)
-              }}
-              onClick={(e) => {
-                e.stopPropagation()
-                surface.openResult(shown)
-              }}
-            >
-              <ResultIcon result={shown} ring={t.readyResult === shown.id} />
-              <span className="truncate">{resultTitle(shown)}</span>
-            </span>
-          )}
-          {more > 0 && (
-            <span
-              className={cn(CHIP, 'text-faint flex-none')}
-              role="button"
-              tabIndex={-1}
-              onKeyDown={(e) => {
-                if (e.key !== 'Enter') return
-                e.stopPropagation()
-                surface.setTrackTab(t.trackId!, 'results')
-              }}
-              onClick={(e) => {
-                e.stopPropagation()
-                surface.setTrackTab(t.trackId!, 'results')
-              }}
-            >
-              {shown
-                ? `+${more} more`
-                : `${more} ${more === 1 ? 'result' : 'results'}`}
-            </span>
-          )}
-        </div>
+      {!track.threads.length && !ndone && (
+        <p className="text-faint pt-4">
+          No threads yet. The threads this track starts, or that you move into
+          it, show up here.
+        </p>
       )}
-    </>
-  )
-  const cls = cn(
-    'animate-in fade-in-0 block max-w-180 rounded-lg border px-4 py-3 text-left transition-colors outline-none focus-visible:border-ring',
-    sel ? 'bg-row-selected' : 'bg-card hover:border-input',
-  )
-  // Buttons cannot sit inside a button, so a card that carries choices is a
-  // div that behaves as one.
-  return opts.length ? (
-    <div
-      className={cls}
-      role="button"
-      tabIndex={0}
-      onClick={() => surface.openThread(t.id)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          surface.openThread(t.id)
-        }
-      }}
-    >
-      {body}
     </div>
-  ) : (
-    <button className={cls} onClick={() => surface.openThread(t.id)}>
-      {body}
-    </button>
   )
 }
 
@@ -641,10 +520,11 @@ function Results({ track }: { track: TrackView }) {
       }}
     >
       <ResultIcon result={r} ring={t?.readyResult === r.id} />
-      {resultTitle(r)}
+      <span className="min-w-0 truncate">{resultTitle(r)}</span>
       <small className="text-faint ml-auto min-w-0 truncate text-xs tabular-nums">
         {resultDetail(r)}
       </small>
+      {t && <MergeButton result={r} className="flex-none" />}
     </div>
   )
   return (

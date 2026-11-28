@@ -36,8 +36,8 @@ const ownerOrRole = (p: Principal, t: TrackRec): boolean => ownerOnly(p, t) || h
 
 // ------------------------------------------------------------------ track.create (40.7)
 
-const trackCreate: MutationFn = (tx, p, args) => {
-  const { tid, agentSessionId, sid, name, firstInput, person } = args as typeof args & { person?: { name: string | null; email: string | null } };
+const trackCreate: MutationFn = (tx, p, args, { person }) => {
+  const { tid, agentSessionId, sid, name, firstInput } = args;
   if (!isTid(tid)) return refuse("invalid_request", "tid");
   if (!isSid(agentSessionId)) return refuse("invalid_request", "agentSessionId");
   if (!optStr(name, 200)) return refuse("invalid_request", "name");

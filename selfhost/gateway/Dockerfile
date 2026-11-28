@@ -1,7 +1,9 @@
 # The self-host gateway: services/managed-agents' Computer path (src/selfhost/entry.ts), api-edge
 # (cloudflare-workers/api-edge, SELFHOST=1) and the dashboard (web/, VITE_SELFHOST=1) under
-# Miniflare, persisting to /data. Build from the repository root:
+# Miniflare, persisting to /data. CI publishes it (.github/workflows/gateway-image.yml,
+# ghcr.io/diggerhq/computer-gateway); to build it yourself, from the repository root:
 #   podman build -f selfhost/gateway/Dockerfile -t computer-gateway:local .
+# Everything it copies is in source-tag.sh's GATEWAY_SOURCE (the image's tag): keep them in step.
 
 # ---- build: the Worker bundle, the way `wrangler deploy` would upload it.
 FROM docker.io/library/node:24-bookworm-slim AS build

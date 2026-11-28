@@ -34,6 +34,7 @@ import {
 } from "./autumn_webhook";
 import { runAutumnMeter } from "./autumn_meter";
 import { runBillingClock } from "./billing_clock";
+import { PUBLIC_PROMO_PREFIX, handlePublicPromo, runPromoRevertSweep } from "./promo";
 import { runSlackConnectInvites } from "./slack_connect";
 import { runActivationAlerts } from "./slack_alerts";
 import { disableManagedBilling, enableManagedBilling } from "./model_billing";
@@ -2143,6 +2144,12 @@ export default {
       return handleAgentFeedback(req, env, path, ctx);
     }
 
+    // Public promotion status for the site and signup (promo.ts): anonymous,
+    // CORS *, ahead of the /api/* API-key gate.
+    if (path.startsWith(PUBLIC_PROMO_PREFIX)) {
+      return handlePublicPromo(req, env.OPENCOMPUTER_DB, path);
+    }
+
 
     // Reconciler trigger for the Autumn re-check+project (EVENT_SECRET HMAC).
     if (path === "/internal/autumn-project") {
@@ -2567,6 +2574,11 @@ export default {
     );
     ctx.waitUntil(
       runBillingClock(env, Date.now()).catch((err) => console.error("billing-clock: run failed", err)),
+    );
+    // Promotions whose months are up go back to the catalog plan at the end of
+    // that billing cycle (promo.ts).
+    ctx.waitUntil(
+      runPromoRevertSweep(env, Date.now()).catch((err) => console.error("promo-revert: run failed", err)),
     );
     if (env.OPENROUTER_PROVISIONING_KEY) {
       ctx.waitUntil(

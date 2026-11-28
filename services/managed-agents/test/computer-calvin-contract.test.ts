@@ -13,7 +13,8 @@ import type { CursorKind } from "./fixtures/calvin/list-cursor.js";
 describe("capabilities match calvin's", () => {
   it("models, modes and features are calvin's exactly", () => {
     const { models, modes, features } = fixture as unknown as ReturnType<typeof capabilities>;
-    expect(capabilities()).toEqual({ models, modes, features });
+    // `attachments` is this deployment's own word (whether a store is configured), not calvin's.
+    expect(capabilities()).toEqual({ models, modes, features: { ...features, attachments: true } });
   });
 
   it("plan-exit modes are calvin's, when calvin exports them", () => {

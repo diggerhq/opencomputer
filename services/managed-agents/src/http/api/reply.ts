@@ -57,6 +57,14 @@ const STATUS_OF: Record<string, number> = {
   inbox_full: 429,
   unavailable: 503,
   computer_unavailable: 503,
+  // Attachments (work 126, section 9); `attachment_not_found` is 404 by the suffix rule.
+  attachment_too_large: 413,
+  attachment_quota: 429,
+  content_mismatch: 400,
+  attachment_in_use: 409,
+  attachment_deleted: 410,
+  attachment_not_ready: 409,
+  attachment_not_uploaded: 409,
   // The host's refusals of a delivered entry (spec 40.2); the host's own `status` comes first (an entry refused before it was kept had none).
   ask_closed: 409,
   session_busy: 409,

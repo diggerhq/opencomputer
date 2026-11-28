@@ -9,7 +9,7 @@ import { oneLayer } from './one-layer'
 // offered: a session runs in the server's default one.
 
 const PICKER =
-  'text-muted-foreground hover:border-border h-7 w-auto border-transparent px-2 text-xs whitespace-nowrap'
+  'text-muted-foreground hover:bg-hover hover:text-foreground h-7 w-auto border-transparent px-2 text-xs whitespace-nowrap'
 
 export function SettingsPickers({
   value,

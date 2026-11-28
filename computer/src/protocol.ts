@@ -42,6 +42,9 @@ export * from './protocol-workspace.js';
 // host only as `api` frames, with the session's `secrets` and `model`; `watch` and `block`
 // come in and `delta` goes out (protocol-api.ts); `start` carries the session's `role`. A host whose
 // `welcome` says another number closes the link and asks for its self-update (host/release.ts).
+// Still 6 (work 126): an `api` frame's `call` may carry `attachments` (ApiAttachment[], metadata only).
+// Optional and additive, so a 6 without it reads unchanged and no field changed meaning; a bump
+// would force the gateway and every host to update in lockstep for a field either side may omit.
 export const PROTOCOL_VERSION = 6;
 
 /** Which agent runs a session's turns (work 082). Absent: claude. */

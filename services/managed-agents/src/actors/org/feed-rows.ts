@@ -14,7 +14,7 @@ const TIMES = new Set(["done_at", "brought_back_at", "earlier_at", "stand_at", "
 const BOOLS = new Set(["keep", "blocked"]);
 const JSONS: Partial<Record<FeedTable, string[]>> = {
   track: ["former_names"],
-  result: ["meta"],
+  result: ["meta", "pull"],
   proposal: ["args"],
   doc: ["spans"],
   pref: ["value"],

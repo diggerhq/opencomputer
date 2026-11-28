@@ -26,7 +26,9 @@ export interface CalvinSessionSpec {
   effort?: string;
   /** The session's speed, as calvin persists it; absent = the default (fast). */
   speed?: "fast" | "standard";
+  /** The agent's conversation, as the runner last reported it: the runner resumes it, and starts a new one without. */
   sdkSessionId?: string;
+  /** Not sent: the host chooses the runner's directory. */
   forkPath?: string;
   /**
    * Work 082: which agent runs the session's turns. Absent = claude. Set to

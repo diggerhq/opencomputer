@@ -17,7 +17,12 @@
   "d1_databases": [
     { "binding": "SERVERLESS_AGENTS_DB", "database_name": "selfhost", "database_id": "00000000-0000-0000-0000-000000000001", "migrations_dir": "migrations" }
   ],
-  "r2_buckets": [{ "binding": "SESSION_LOG_BLOBS", "bucket_name": "session-log" }],
+  // ATTACHMENTS holds the attachments' bytes; its URLs are the gateway's own, signed with ATTACHMENTS_URL_KEY
+  // (serve.mjs). An operator who sets ATTACHMENTS_S3_* uses that store instead.
+  "r2_buckets": [
+    { "binding": "SESSION_LOG_BLOBS", "bucket_name": "session-log" },
+    { "binding": "ATTACHMENTS", "bucket_name": "attachments" }
+  ],
   "kv_namespaces": [{ "binding": "WIRE_KEYS", "id": "00000000000000000000000000000084" }],
   "durable_objects": {
     "bindings": [

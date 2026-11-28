@@ -1,6 +1,6 @@
 // The API's routes (work 084, spec 37): `METHOD /suffix` to a route, the scope each needs, and which the actors serve.
 
-import { matchMutation } from "../../actors/org/contract.js";
+import { EDGE_MUTATIONS, matchMutation } from "../../actors/org/contract.js";
 import type { ApiScope } from "../../api-objects/objects.js";
 import { isId, isSessionId } from "../../ids/session-ids.js";
 
@@ -16,6 +16,8 @@ export interface Route {
 /** The work routes of tracks and threads (spec 37.1, 37.3): a mutation's, from the table, or a read. */
 function workRoute(method: string, s: string[]): Route | null {
   const mutation = matchMutation(method, `/work/${s.join("/")}`);
+  // GitHub's first, then Org's: a route of its own (result-merge.ts), `work.merge` or `work.revert`.
+  if (mutation && EDGE_MUTATIONS.has(mutation.name)) return { op: `work.${mutation.name.split(".")[1]!}`, sub: mutation.args.resultId! };
   if (mutation) return { op: "mutate", ...mutation };
   const [a, b, c, d] = s;
   const n = s.length;
@@ -113,6 +115,16 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
     if (is("GET", 4)) return { op: "subagents.get", sessionId, sub: p[3] };
     if (is("POST", 5) && p[4] === "stop") return { op: "subagents.stop", sessionId, sub: p[3] };
   }
+  // Attachments (work 126, section 4): Org's rows and the object store, served by http/api/attachment-routes.ts.
+  if (r === "attachments") {
+    if (is("GET", 3)) return { op: "attachments.list", sessionId };
+    if (is("GET", 4)) return { op: "attachments.get", sessionId, sub: p[3] };
+    if (is("DELETE", 4)) return { op: "attachments.delete", sessionId, sub: p[3] };
+    if (is("PUT", 4)) return { op: "attachments.put", sessionId, sub: p[3] };
+    if (is("POST", 5) && p[4] === "complete") return { op: "attachments.complete", sessionId, sub: p[3] };
+    if (is("GET", 5) && p[4] === "url") return { op: "attachments.url", sessionId, sub: p[3] };
+    return null;
+  }
   if (r === "secrets" && is("GET", 3)) return { op: "secrets.session.list", sessionId };
   if (r === "secrets" && is("PUT", 4)) return { op: "secrets.session.put", sessionId, sub: p[3] };
   if (r === "secrets" && is("DELETE", 4)) return { op: "secrets.session.delete", sessionId, sub: p[3] };
@@ -125,8 +137,8 @@ export function scopeOf(op: string): ApiScope | null {
   if (op === "asks.answer" || op === "asks.dismiss") return "asks:answer";
   if (op === "secrets" || op === "secrets.put" || op === "secrets.delete" || op === "secrets.session.put" || op === "secrets.session.delete") return "secrets:write";
   if (op === "secrets.events" || op === "secrets.session.list") return "sessions:read";
-  if (op === "work.repository.put" || op === "mutate" || op === "work.tell") return "work:write";
-  if (op === "live") return "sessions:read";
+  if (op === "work.repository.put" || op === "mutate" || op === "work.tell" || op === "work.merge" || op === "work.revert") return "work:write";
+  if (op === "live" || op === "attachments.url") return "sessions:read";
   if (op === "feed" || op === "occurrences") return "sessions:read";
   if (op.startsWith("work.")) return "work:read";
   if (op === "list" || op === "get" || op === "capabilities" || op.endsWith(".list") || op.endsWith(".get")) return "sessions:read";
@@ -141,5 +153,6 @@ export const ACTOR_OPS = new Set([
   "events.list", "turns.list", "turns.get", "asks.list", "asks.get", "subagents.list", "subagents.get",
   "feed", "occurrences", "mutate",
   "work.threads", "work.thread", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put", "work.repositories",
-  "live", "work.tell", "work.diff", "work.file", "slack.post", "settings.get", "settings.patch",
+  "live", "work.tell", "work.diff", "work.merge", "work.revert", "work.file", "slack.post", "settings.get", "settings.patch",
+  "attachments.list", "attachments.get", "attachments.delete", "attachments.put", "attachments.complete", "attachments.url",
 ]);

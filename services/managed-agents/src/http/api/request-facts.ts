@@ -36,6 +36,7 @@ export function routeFamily(op: string): string {
   if (op === "secrets" || op.startsWith("secrets.")) return "secrets";
   if (op.startsWith("work.") || op === "mutate") return "work";
   if (op === "feed" || op === "occurrences" || op === "live") return "feed";
+  if (op.startsWith("attachments.")) return "attachments";
   return "other";
 }
 
@@ -47,6 +48,7 @@ const OPS = new Set([
   "asks.list", "asks.get", "asks.answer", "asks.dismiss", "subagents.list", "subagents.get", "subagents.stop",
   "work.repository.get", "work.repository.put", "work.repositories",
   "feed", "occurrences", "mutate", "work.threads", "work.thread", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search",
+  "attachments.list", "attachments.get", "attachments.delete", "attachments.put", "attachments.complete", "attachments.url",
 ]);
 
 /** The request's one `httpapi.request`; never throws, never awaited. */

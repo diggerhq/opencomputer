@@ -59,6 +59,7 @@ function DialogContent({
   onInteractOutside,
   onPointerDownOutside,
   onFocusOutside,
+  onOpenAutoFocus,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
@@ -85,6 +86,20 @@ function DialogContent({
           onFocusOutside?.(event)
         }}
         {...props}
+        onOpenAutoFocus={(event) => {
+          onOpenAutoFocus?.(event)
+          if (event.defaultPrevented) return
+          // With nothing else to focus, Radix lands on the close button and a
+          // keyboard-opened dialog shows a ring on X. Focus the dialog instead.
+          const el = event.currentTarget as HTMLElement
+          const first = el.querySelector<HTMLElement>(
+            'input, textarea, select, button, [href], [tabindex]:not([tabindex="-1"])',
+          )
+          if (!first || first.dataset.slot === 'dialog-close') {
+            event.preventDefault()
+            el.focus()
+          }
+        }}
       >
         {children}
         {showCloseButton && (

@@ -24,6 +24,14 @@ export const FileChange = Schema.Struct({
   removed: Schema.NullOr(Count),
 }).annotate({ identifier: 'FileChange' });
 
+/** A message's attachment (work 126): metadata only; the bytes are at the signed URL `GET /sessions/{id}/attachments/{attachmentId}/url` answers. */
+export const MessageAttachment = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  mimetype: Schema.String,
+  bytes: Count,
+}).annotate({ identifier: 'MessageAttachment' });
+
 /** `data` of every recorded event type. */
 export const EVENT_DATA = {
   'session.created': Schema.Struct({ title: Schema.String, origin: Origin, settings: Settings }),
@@ -39,6 +47,8 @@ export const EVENT_DATA = {
     declinedAskIds: Schema.Array(AskId),
     /** A steer's own id, when its sender named one (`turns.send`'s `turnId`; the cloud's inbox entry): a redelivery of it is a duplicate. */
     messageId: Schema.optionalKey(TurnId),
+    /** The message's attachments (work 126); empty when none. */
+    attachments: Schema.Array(MessageAttachment),
   }),
   /** `trigger` as on the Turn; `subagentId`: the background subagent whose end started the turn (`trigger` `subagent`), else null. */
   'turn.queued': Schema.Struct({ position: Count, trigger: TurnTrigger, subagentId: Schema.NullOr(SubagentId) }),

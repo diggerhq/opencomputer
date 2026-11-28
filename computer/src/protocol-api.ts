@@ -82,6 +82,20 @@ export interface SessionAccess {
   admins?: string[];
 }
 
+/**
+ * A message's attachment as every client and the runner see it (work 126): metadata only, from Org's row at reserve,
+ * never the bytes. The runner asks `GET /sessions/{sid}/attachments/{id}/url` with the session's own credential
+ * and fetches the bytes from the signed URL it answers, with none (runner/attachments.ts).
+ */
+export interface ApiAttachment {
+  /** `at_…`, client-made. */
+  id: string;
+  /** The uploader's name for it: never a path (the runner saves it as `<id>-<basename>`). */
+  name: string;
+  mimetype: string;
+  bytes: number;
+}
+
 /** API session status (API `Session.status`). */
 export type ApiSessionStatus = 'starting' | 'running' | 'waiting' | 'idle' | 'suspended';
 
@@ -107,7 +121,9 @@ export type GatewayToHostV4 =
       member: string; idempotencyKey?: string; requestId?: string;
       /** The session, when the host may not know it yet (a write to a session with no runner and no local journal). */
       session?: SessionSpec; epoch?: number; lastSeq?: number;
-      credentials?: HostCredentials; secrets?: SessionSecret[]; model?: ModelRoute }
+      credentials?: HostCredentials; secrets?: SessionSecret[]; model?: ModelRoute;
+      /** Work 126: the attachments of a `turns.send` (the inbox body's metadata, Org's); absent or empty: none. Copied onto `message.received`. */
+      attachments?: ApiAttachment[] }
   /** Someone watches the session until `until` (ms since the epoch): its deltas go up as `delta` frames until then. A lease, re-sent on renewal. */
   | { t: 'watch'; sessionId: string; until: number }
   /** A watcher lost its place in block `blockId`: answered by one `delta` holding the block so far (`offset: 0`, `whole`). */
@@ -232,7 +248,9 @@ export type ApiClientFrame =
   /** First on every connection: the writer's token (WhereResult.token); anything else first, or a wrong token, closes it. */
   | { t: 'hello'; token: string }
   | { t: 'call'; id: string; method: string; params: unknown; actor: ApiActor; member: string;
-      idempotencyKey?: string; requestId?: string }
+      idempotencyKey?: string; requestId?: string;
+      /** Work 126: the `api` frame's `attachments`, for a `turns.send`. */
+      attachments?: ApiAttachment[] }
   /**
    * Replay then live: events with seq > `after` (or the last `tailTurns` turns), then every new one. `result` is
    * api/writer.ts `Attached`; events follow it. `deltas: false` drops deltas.

@@ -18,6 +18,7 @@ import type {
 } from "../protocol.js";
 import { type ActorEnv, orgOf } from "../actors/addresses.js";
 import type { PullPub } from "../actors/org/contract.js";
+import { pullPub, readPull, repoCall, type Pull } from "./github-pull.js";
 import type { RequestIdentity } from "./auth.js";
 import {
   createGitHubCheckRun,
@@ -1340,26 +1341,15 @@ export async function receiveGitHubWebhook(
   return json({ handled: false });
 }
 
-const PULL_ACTIONS = new Set(["opened", "closed", "reopened", "synchronize"]);
-
-type PullFields = { html_url?: unknown; number?: unknown; state?: unknown; merged?: unknown; merged_at?: unknown; title?: unknown };
-
-/** A pull request as Org takes it; null when GitHub's object lacks a field. */
-function pullPub(fullName: string, pr: PullFields, checks: string | null): PullPub | null {
-  if (typeof pr.number !== "number" || typeof pr.title !== "string") return null;
-  const merged = pr.merged === true || (typeof pr.merged_at === "string" && pr.merged_at !== "");
-  const state = merged ? "merged" : pr.state === "open" ? "open" : pr.state === "closed" ? "closed" : null;
-  if (!state) return null;
-  const url = typeof pr.html_url === "string" ? pr.html_url : `https://github.com/${fullName}/pull/${String(pr.number)}`;
-  return { url, state, checks, title: pr.title, at: Date.now() };
-}
+const PULL_ACTIONS = new Set(["opened", "closed", "reopened", "synchronize", "ready_for_review", "converted_to_draft"]);
 
 /**
  * Spec 40.9: a `pull_request` event (`opened`, `closed`, `reopened`, `synchronize`) or a completed
  * `check_suite`, for any repository of the installation, goes to `Org.acceptPull` of every
  * organization that chose a Work repository through it (`github_installation_orgs`). A pull
  * request event carries no checks (null); a check suite carries its conclusion, and each of its
- * pull requests is read from GitHub for its state and title. Best effort: a failure is logged and
+ * pull requests is read from GitHub for its state and title; the conclusion is taken only for the
+ * pull request whose head is the suite's commit. Best effort: a failure is logged and
  * the deploy handling below goes on.
  */
 async function acceptPulls(
@@ -1381,7 +1371,7 @@ async function acceptPulls(
     if (orgs.length === 0) return;
     let pubs: PullPub[] = [];
     if (pullEvent) {
-      const pub = pullPub(repository.full_name, payload.pull_request as PullFields, null);
+      const pub = pullPub(repository.full_name, payload.pull_request as Pull, null, Date.now());
       if (pub) pubs = [pub];
     } else {
       const conclusion = typeof suite!.conclusion === "string" ? suite!.conclusion : null;
@@ -1395,12 +1385,13 @@ async function acceptPulls(
         permissions: { pull_requests: "read" },
       });
       if (minted.outcome !== "minted") return;
+      const [owner, name] = repository.full_name.split("/") as [string, string];
+      const github = repoCall(minted.token, owner, name);
       for (const number of numbers) {
-        const response = await fetch(`https://api.github.com/repos/${repository.full_name}/pulls/${String(number)}`, {
-          headers: { authorization: `Bearer ${minted.token}`, accept: "application/vnd.github+json", "user-agent": "opencomputer-managed-agents", "x-github-api-version": "2022-11-28" },
-        });
-        if (!response.ok) continue;
-        const pub = pullPub(repository.full_name, (await response.json()) as PullFields, conclusion);
+        const read = await readPull(github, number);
+        if (!read.ok) continue;
+        // A suite is of one commit: its conclusion says nothing of a head pushed since.
+        const pub = pullPub(repository.full_name, read.pr, read.pr.head?.sha === suite!.head_sha ? conclusion : null, Date.now());
         if (pub) pubs.push(pub);
       }
     }

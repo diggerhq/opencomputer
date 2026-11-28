@@ -33,6 +33,10 @@ export interface MutationArgs {
   "result.add": { resultId: string; sid: string; kind: "pr" | "changes" | "preview" | "file" | "document"; ref: string; title: string; meta?: Record<string, unknown> };
   /** `parts` as review.v1.json has them. */
   "review.save": { resultId: string; head: string; parts: unknown[] };
+  /** Merge the result's pull request on GitHub. `head`: the commit the caller saw; another head is `refused` `changed`. */
+  "result.merge": { resultId: string; head?: string; at?: number };
+  /** Undo a merge: open the pull request's revert on GitHub and merge it. */
+  "result.revert": { resultId: string };
   "proposal.create": { proposalId: string; kind: "done" | "wrap" | "move" | "edit"; target: string; what: string; args?: Record<string, unknown> };
   "proposal.accept": { proposalId: string };
   "proposal.dismiss": { proposalId: string };
@@ -65,11 +69,19 @@ export const MUTATION_ROUTES: Record<MutationName, readonly [method: string, pat
   "doc.save": ["PUT", "/work/tracks/{tid}/doc"],
   "result.add": ["PUT", "/work/results/{resultId}"],
   "review.save": ["PUT", "/work/results/{resultId}/review"],
+  "result.merge": ["POST", "/work/results/{resultId}/merge"],
+  "result.revert": ["POST", "/work/results/{resultId}/revert"],
   "proposal.create": ["POST", "/work/proposals"],
   "proposal.accept": ["POST", "/work/proposals/{proposalId}/accept"],
   "proposal.dismiss": ["POST", "/work/proposals/{proposalId}/dismiss"],
   undo: ["POST", "/work/ops/{opId}/undo"],
 };
+
+/**
+ * Mutations whose first part is GitHub's, done by the API before Org records it (`result.merge`,
+ * `result.revert`): the reply can take seconds, and `refused` carries GitHub's reason.
+ */
+export const EDGE_MUTATIONS: ReadonlySet<MutationName> = new Set<MutationName>(["result.merge", "result.revert"]);
 
 /** A mutation as a request: its method, its path with the path's arguments, and the rest as the body. */
 export function mutationRequest(name: MutationName, args: Record<string, unknown>): { method: string; path: string; body: Record<string, unknown> } {

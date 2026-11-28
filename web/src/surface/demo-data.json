@@ -1388,6 +1388,19 @@
       "default": false
      },
      {
+      "id": "claude-fable-5-2",
+      "name": "Claude Fable 5.2",
+      "efforts": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ],
+      "contextWindow": 1000000,
+      "default": false
+     },
+     {
       "id": "claude-fable-5-1",
       "name": "Claude Fable 5.1",
       "efforts": [

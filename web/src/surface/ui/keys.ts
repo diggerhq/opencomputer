@@ -1,4 +1,6 @@
+import { EditorView } from '@codemirror/view'
 import { tinykeys } from 'tinykeys'
+import { mergeable } from '../store/pulls'
 import type { Surface } from '../store/surface-store'
 
 // Spec section 12: one key per frequent action. Letters act only while the
@@ -11,6 +13,12 @@ const typing = (e: KeyboardEvent) => {
     (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.isContentEditable)
   )
 }
+
+// Whether the box typed in is empty: a field, or a composer's editor (MarkdownInput).
+const empty = (t: HTMLElement) =>
+  t instanceof HTMLTextAreaElement || t instanceof HTMLInputElement
+    ? t.value === ''
+    : EditorView.findFromDOM(t)?.state.doc.length === 0
 
 export function bindKeys(root: HTMLElement, surface: Surface): () => void {
   const plain = (fn: (e: KeyboardEvent) => void) => (e: KeyboardEvent) => {
@@ -72,7 +80,7 @@ export function bindKeys(root: HTMLElement, surface: Surface): () => void {
             ? `k:${s.loc.track}`
             : 'new'
         root
-          .querySelector<HTMLTextAreaElement>(`textarea[data-draft="${key}"]`)
+          .querySelector<HTMLElement>(`[data-draft="${key}"]`)
           ?.focus()
       }),
       e: plain(() => {
@@ -86,19 +94,26 @@ export function bindKeys(root: HTMLElement, surface: Surface): () => void {
       }),
       // Done lands in the start box: Z in an empty box still takes "Undo Z" while it is offered.
       z: (e) => {
-        const box = e.target as HTMLTextAreaElement
+        const box = e.target as HTMLElement
         if (
           typing(e) &&
           !e.metaKey &&
           !e.ctrlKey &&
           !e.altKey &&
-          box.value === '' &&
+          empty(box) &&
           surface.get().toasts.some((t) => t.undo)
         ) {
           e.preventDefault()
           void surface.undoLast()
         } else plain(() => void surface.undoLast())(e)
       },
+      // Merge, where the thread offers it: on its done suggestion (work 118).
+      m: plain(() => {
+        const t = openThread()
+        if (!t || t.done || !t.proposals.some((x) => x.type === 'done')) return
+        const pulls = t.results.filter(mergeable)
+        if (pulls.length === 1) surface.merge(pulls[0].id)
+      }),
       t: plain(() => {
         const t = openThread()
         if (t && !t.trackId && !t.done) surface.trackIt(t.id)

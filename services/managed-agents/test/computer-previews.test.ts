@@ -174,7 +174,7 @@ describe("computer previews", () => {
     for (let port = 3000; port < 3000 + PREVIEW_NAME_LIMIT - 1; port++) await previews.register("s", { port });
     const results = await Promise.allSettled([previews.register("s", { port: 5000 }), previews.register("s", { port: 5001 })]);
     expect(results.map((result) => result.status).sort()).toEqual(["fulfilled", "rejected"]);
-    expect(String((results.find((result) => result.status === "rejected") as PromiseRejectedResult).reason)).toContain("already has 50 preview URLs");
+    expect(String((results.find((result) => result.status === "rejected") as PromiseRejectedResult).reason)).toContain(`already has ${PREVIEW_NAME_LIMIT} preview URLs`);
     // Re-pointing a name it holds is not a new one.
     expect((await previews.register("s", { port: 3000 })).port).toBe(3000);
   });
