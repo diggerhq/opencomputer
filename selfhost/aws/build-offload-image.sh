@@ -88,7 +88,8 @@ aws_q() {
 
 if ((!DRY_RUN)); then
   command -v aws >/dev/null || die "the AWS CLI is not installed"
-  aws lambda-microvms help >/dev/null 2>&1 || die "this AWS CLI does not know lambda-microvms; update it"
+  # Offline: `help` exits 255 without groff or mandoc, even when the CLI has the service.
+  aws lambda-microvms list-microvms --generate-cli-skeleton >/dev/null 2>&1 || die "this AWS CLI does not know lambda-microvms; update it"
 fi
 
 # ---- stage and hash: the Dockerfile with the session image pinned, and the agent
