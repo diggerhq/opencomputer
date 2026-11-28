@@ -4,11 +4,12 @@
   "description": "Claude Code in a Slack thread, optimized for presence: live streaming, steering, approvals",
   "scripts": {
     "start": "tsx src/main.ts",
-    "check": "tsc && biome lint && vitest run && node scripts/max-lines.mjs && node scripts/boundaries.mjs && node scripts/api-schema.mjs --check && node scripts/wire-auth-vectors.mjs --check && node scripts/bundle-runner.mjs",
+    "check": "tsc && biome lint && vitest run && npm run test:offload && node scripts/max-lines.mjs && node scripts/boundaries.mjs && node scripts/api-schema.mjs --check && node scripts/wire-auth-vectors.mjs --check && node scripts/bundle-runner.mjs",
     "typecheck": "tsc",
     "lint": "biome lint",
     "format": "biome format --write",
     "test": "vitest run",
+    "test:offload": "node --test offload/builder/agent.test.mjs",
     "perf-check": "tsx src/dev/perf-check.ts"
   },
   "license": "Apache-2.0",
