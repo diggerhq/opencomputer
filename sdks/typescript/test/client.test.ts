@@ -79,19 +79,20 @@ function watchFeed(client: Client, kinds: string[] = KINDS) {
   return { frames, rows, of, session, stop };
 }
 
-/** The events a reader holds: a `reset` drops those above its `seq`. */
+/** The events a reader holds: a `reset` drops those above its `seq`, and an update's events are merged by `seq`. */
 function watchEvents(client: Client, sid: string) {
   const held: ApiEvent[] = [];
   const updates: EventsUpdate[] = [];
+  /** Updates after which what was held had a gap or a duplicate. */
+  const broken: number[] = [];
   const stop = client.events(sid).subscribe((u) => {
     updates.push(u);
-    if (u.reset) {
-      const keep = u.reset.seq;
-      held.splice(0, held.length, ...held.filter((e) => keep !== null && e.seq <= keep));
-    }
-    held.push(...u.events);
+    const keep = u.reset ? u.reset.seq : Infinity;
+    const next = [...held.filter((e) => keep !== null && e.seq <= keep), ...u.events].sort((a, b) => a.seq - b.seq);
+    held.splice(0, held.length, ...next);
+    if (held.some((e, i) => i > 0 && e.seq !== held[i - 1].seq + 1)) broken.push(updates.length - 1);
   });
-  return { held, updates, stop, seqs: () => held.map((e) => e.seq) };
+  return { held, updates, broken, stop, seqs: () => held.map((e) => e.seq), hasEarlier: () => updates[updates.length - 1]?.hasEarlier };
 }
 
 // ---------------------------------------------------------------- the server's truth, read apart
@@ -123,6 +124,12 @@ async function eventsOf(me: Caller, sid: string): Promise<ApiEvent[]> {
     if (!page.hasMore) return out;
     q = `after=${encodeURIComponent(page.cursor)}`;
   }
+}
+
+/** The last seq of the session's log; -1 when the read failed (the local stack answers 500 once in a burst of appends). */
+async function lastSeqOf(me: Caller, sid: string): Promise<number> {
+  const res = await me.fetch(`/sessions/${sid}/events?last=1`);
+  return res.status === 200 ? ((await res.json()) as { lastSeq: number }).lastSeq : -1;
 }
 
 /** The feed held what the server held at one moment (a later change may be on its way to both). */
@@ -362,6 +369,16 @@ describe("mutations", () => {
   });
 });
 
+/** `tools` more tool calls in the running turn of `sid`, two events each, all in the log. */
+async function work(w: World, sid: string, tools: number): Promise<void> {
+  let from = -1;
+  await until(async () => (from = await lastSeqOf(w.me, sid)) >= 0);
+  for (let i = 0; i < tools; i++) w.host.tool(sid, `step ${i}`);
+  await until(async () => (await lastSeqOf(w.me, sid)) >= from + tools * 2);
+}
+
+const eventReads = (w: World, sid: string) => w.net.requests.filter((r) => r.path.startsWith(`/sessions/${sid}/events`)).map((r) => r.path.split("?")[1] ?? "");
+
 describe("a session", () => {
   it("createSession and a turn: the events arrive in seq order, with the deltas", async () => {
     const w = await setup();
@@ -439,11 +456,12 @@ describe("a session", () => {
       return truth.some((e) => e.type === "turn.completed") && events.held.length >= truth.length;
     });
     expect(events.seqs()).toEqual((await eventsOf(w.me, sid)).map((e) => e.seq));
-    expect(events.updates.some((u) => u.reset)).toBe(false);
+    // The window is told whole once; nothing after it replaces what is held.
+    expect(events.updates.slice(1).some((u) => u.reset)).toBe(false);
     // The read after the reconnect asked for what follows the cursor, not for the log again.
-    const reads = w.net.requests.filter((r) => r.path.startsWith(`/sessions/${sid}/events`));
-    expect(reads.filter((r) => r.path.includes("tailTurns")).length).toBe(1);
-    expect(reads.some((r) => r.path.includes("after="))).toBe(true);
+    const reads = eventReads(w, sid);
+    expect(reads.filter((q) => q.startsWith("last=")).length).toBe(1);
+    expect(reads.some((q) => q.startsWith("after="))).toBe(true);
   });
 
   it("recovers from a reset when its cursor is past the log's end", async () => {
@@ -481,6 +499,146 @@ describe("a session", () => {
     const held = watchEvents(again, sid);
     await until(() => held.updates.length > 0);
     expect(held.held).toEqual(await eventsOf(w.me, sid));
+  });
+});
+
+describe("a session's window", () => {
+  it("opens at the log's end: one read, one update, however long the log", async () => {
+    const w = await setup();
+    const sid = await thread(w);
+    await work(w, sid, 150);
+    const truth = await eventsOf(w.me, sid);
+    const events = watchEvents(w.client, sid);
+    await until(() => events.updates.length > 0);
+    await sleep(50);
+    expect(events.updates).toHaveLength(1);
+    expect(events.updates[0]).toMatchObject({ reset: { seq: null }, hasEarlier: true });
+    expect(events.seqs()).toEqual(truth.slice(-200).map((e) => e.seq));
+    expect(eventReads(w, sid)).toEqual(["last=200"]);
+  });
+
+  it("a short log is the whole window, with nothing earlier", async () => {
+    const w = await setup();
+    const sid = await thread(w);
+    const events = watchEvents(w.client, sid);
+    await until(() => events.updates.length > 0);
+    expect(events.updates[0]).toMatchObject({ reset: { seq: null }, hasEarlier: false });
+    expect(events.held).toEqual(await eventsOf(w.me, sid));
+    await w.client.earlier(sid);
+    expect(eventReads(w, sid).some((q) => q.startsWith("before="))).toBe(false);
+  });
+
+  it("earlier() extends the window back a page at a time, and calls made together share one read", async () => {
+    const w = await setup();
+    const sid = await thread(w);
+    await work(w, sid, 400);
+    const truth = await eventsOf(w.me, sid);
+    const events = watchEvents(w.client, sid);
+    await until(() => events.updates.length > 0);
+    await Promise.all([w.client.earlier(sid), w.client.earlier(sid)]);
+    expect(eventReads(w, sid).filter((q) => q.startsWith("before="))).toHaveLength(1);
+    expect(events.seqs()).toEqual(truth.slice(-700).map((e) => e.seq));
+    expect(events.hasEarlier()).toBe(true);
+    await w.client.earlier(sid);
+    expect(events.held).toEqual(truth);
+    expect(events.hasEarlier()).toBe(false);
+    await w.client.earlier(sid);
+    expect(eventReads(w, sid).filter((q) => q.startsWith("before="))).toHaveLength(2);
+    expect(events.broken).toEqual([]);
+  });
+
+  it("a reader more than a page behind is given the end again, in one update", async () => {
+    const w = await setup();
+    const sid = await thread(w);
+    const events = watchEvents(w.client, sid);
+    await until(() => events.updates.length > 0);
+    w.net.offline(true);
+    await work(w, sid, 300);
+    w.net.offline(false);
+    await until(() => events.updates.filter((u) => u.reset).length === 2);
+    const truth = await eventsOf(w.me, sid);
+    const last = events.updates[events.updates.length - 1];
+    expect(last).toMatchObject({ reset: { seq: null }, hasEarlier: true });
+    expect(last.events.map((e) => e.seq)).toEqual(truth.slice(-200).map((e) => e.seq));
+    expect(events.seqs()).toEqual(truth.slice(-200).map((e) => e.seq));
+    // Nothing was told of the page that showed how far behind it was.
+    expect(events.updates.filter((u) => !u.reset).every((u) => u.events.length < 100)).toBe(true);
+  });
+
+  it("prefetch() reads the window without following it; a reader then has it at once", async () => {
+    const w = await setup();
+    const sid = await thread(w);
+    await work(w, sid, 150);
+    const truth = await eventsOf(w.me, sid);
+    await w.client.prefetch(sid);
+    expect(eventReads(w, sid)).toEqual(["last=200"]);
+    const events = watchEvents(w.client, sid);
+    await sleep(0);
+    expect(events.updates).toHaveLength(1);
+    expect(events.seqs()).toEqual(truth.slice(-200).map((e) => e.seq));
+    await sleep(50);
+    expect(eventReads(w, sid).filter((q) => q.startsWith("last="))).toHaveLength(1);
+    // Followed from here on.
+    w.host.tool(sid, "after");
+    await until(async () => events.held[events.held.length - 1].seq === (await lastSeqOf(w.me, sid)));
+    expect(events.broken).toEqual([]);
+  });
+
+  it("a reader that arrives while a prefetch is read joins it", async () => {
+    const w = await setup();
+    const sid = await thread(w);
+    await work(w, sid, 150);
+    const ahead = w.client.prefetch(sid);
+    const events = watchEvents(w.client, sid);
+    await ahead;
+    await until(() => events.updates.length > 0);
+    await sleep(50);
+    expect(eventReads(w, sid).filter((q) => q.startsWith("last="))).toHaveLength(1);
+    expect(events.updates.filter((u) => u.reset)).toHaveLength(1);
+    expect(events.seqs()).toEqual((await eventsOf(w.me, sid)).slice(-200).map((e) => e.seq));
+  });
+
+  it("has no gap after any interleaving of earlier(), pushed frames and dropped sockets", async () => {
+    const w = await setup({ seed: 11 });
+    const sid = await thread(w);
+    await work(w, sid, 600);
+    const events = watchEvents(w.client, sid);
+    await until(() => events.updates.length > 0);
+    w.net.chaos({ drop: 0.3, duplicate: 0.3, reorder: 0.3 });
+    let x = 11;
+    const random = () => (x = (x * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
+    for (let i = 0; i < 60; i++) {
+      const r = random();
+      if (r < 0.2) void w.client.earlier(sid);
+      else if (r < 0.3) w.net.dropSockets();
+      else if (r < 0.8) w.host.tool(sid, `while reading ${i}`);
+      else await sleep(random() * 20);
+    }
+    w.net.chaos({});
+    w.host.end(sid);
+    const truth = async () => eventsOf(w.me, sid);
+    await until(async () => events.held.length > 0 && events.held[events.held.length - 1].seq === (await lastSeqOf(w.me, sid)));
+    while (events.hasEarlier()) await w.client.earlier(sid);
+    expect(events.broken).toEqual([]);
+    expect(events.held).toEqual(await truth());
+  });
+
+  it("with keepEvents, keeps the window's older edge: a second client reads back from it", async () => {
+    const w = await setup({ client: { keepEvents: true } });
+    const sid = await thread(w);
+    await work(w, sid, 150);
+    const events = watchEvents(w.client, sid);
+    await until(() => events.updates.length > 0);
+    await sleep(5);
+    w.client.close();
+    const again = connect(w, w.storage, { keepEvents: true });
+    const held = watchEvents(again, sid);
+    await until(() => held.updates.length > 0);
+    expect(held.updates[0]).toMatchObject({ reset: { seq: null }, hasEarlier: true });
+    expect(held.updates[0].events).toHaveLength(200);
+    await again.earlier(sid);
+    expect(held.held).toEqual(await eventsOf(w.me, sid));
+    expect(eventReads(w, sid).filter((q) => q.startsWith("last="))).toHaveLength(1);
   });
 });
 

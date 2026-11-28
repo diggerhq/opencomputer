@@ -75,7 +75,7 @@ export function watchConversations({
   const begin = (sid: string) => {
     const w = watching.get(sid)
     if (!w || w.started || !onServer(sid)) return
-    const a = client.events(sid, { tailTurns: 30 }).subscribe((u) => onEvents(sid, u))
+    const a = client.events(sid).subscribe((u) => onEvents(sid, u))
     const b = client.deltas(sid).subscribe((d) => onDelta(sid, d))
     w.started = true
     w.stop = () => (a(), b())

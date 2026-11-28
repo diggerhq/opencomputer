@@ -1,7 +1,7 @@
 // `createClient` (section 42.1): the socket of section 38.3, the three streams, the write queue.
 //
 // Storage keys: `meta` (the client id), `queue/<ms>-<key>`, `feed/cursor`, `feed/row/<kind>/<id>`,
-// and with `keepEvents` `ev/<session>/cursor` and `ev/<session>/e/<seq>`.
+// and with `keepEvents` `ev/<session>/cursor`, `ev/<session>/prev` and `ev/<session>/e/<seq>`.
 //
 // Nothing starts before `ready`: a stream subscribed earlier starts then, and a write made earlier
 // throws (the queue comes from storage).
@@ -175,7 +175,9 @@ export function createClient(o: ClientOptions): Client {
     status,
     ready,
     feed: (kinds) => whenReady(() => feed.stream(kinds)),
-    events: (sessionId, opts) => whenReady(() => events.stream(sessionId, opts)),
+    events: (sessionId) => whenReady(() => events.stream(sessionId)),
+    earlier: (sessionId) => ready.then(() => events.earlier(sessionId)),
+    prefetch: (sessionId) => ready.then(() => events.prefetch(sessionId)),
     deltas: (sessionId) => whenReady(() => deltas(sessionId)),
     mutate: (name, args) => queue.add({ kind: "mutation", name, args: args as Record<string, unknown> }),
     createSession(body) {
