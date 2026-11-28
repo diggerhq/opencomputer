@@ -9,7 +9,7 @@ import type { Counts } from './views'
 // person's unconfirmed writes replayed on top, and what is open on screen.
 
 export type Layout = 'L1' | 'L2' | 'L3'
-export type TrackTab = 'activity' | 'doc' | 'results'
+export type TrackTab = 'activity' | 'threads' | 'doc' | 'results'
 export type Theme = 'system' | 'light' | 'dark'
 
 export interface Toast {

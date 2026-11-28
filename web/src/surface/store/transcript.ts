@@ -36,6 +36,9 @@ export type Item =
   | { kind: 'subagent'; key: string; sub: Subagent; steps: Step[]; activity: string | null; at: string }
   // A line that is not a message: a structural change, "Stopped", a failure.
   | { kind: 'line'; key: string; text: string; tone: 'muted' | 'error'; at: string; undo?: string; undone?: boolean }
+  // A track's threads, where they joined it, drawn as one group of rows. `ids`:
+  // their session ids, comma-joined, so an unchanged group compares equal.
+  | { kind: 'threads'; key: string; ids: string; at: string }
 
 // Where the person's own message is on its way to the agent (work 134). No
 // state: the agent has read it, and it is drawn where it did.

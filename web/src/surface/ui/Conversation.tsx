@@ -17,6 +17,7 @@ import {
 } from '@/components/ui/collapsible'
 import { cn } from '@/lib/utils'
 import { useConversation, useSurface } from '../hooks'
+import { ThreadGroup } from './ThreadRows'
 import {
   formatDuration,
   type Entry,
@@ -587,6 +588,8 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
       return <SubagentView item={item} />
     case 'line':
       return <Line item={item} />
+    case 'threads':
+      return <ThreadGroup ids={item.ids} />
   }
 }, sameItem)
 
