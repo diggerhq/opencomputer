@@ -204,6 +204,11 @@ describe("merging a result's pull request (work 118)", () => {
   const DELETE = "DELETE /git/refs/heads/feat/x";
   const runs = (...check_runs: unknown[]) => () => Response.json({ check_runs });
   const passed = runs({ name: "ci", status: "completed", conclusion: "success" });
+  /** What runs past the response (the branch's tidying), to wait for. */
+  const after = () => {
+    const pending: Promise<unknown>[] = [];
+    return { waitUntil: (promise: Promise<unknown>) => void pending.push(promise), settle: () => Promise.all(pending) };
+  };
 
   it("merges at the head it was shown by the first method the repository allows, deletes the branch, and Org records it under the request's key", async () => {
     const org = orgOf(row());
@@ -216,8 +221,12 @@ describe("merging a result's pull request (work 118)", () => {
       [BASED]: () => Response.json([]),
       [DELETE]: () => new Response(null, { status: 204 }),
     });
-    const r = await setup({ ORGS: ns(org), ACCOUNTS: ns(acc) })("POST", `/work/results/${RID}/merge`, { body: { head: HEAD, at: Date.now() }, headers: { "idempotency-key": "k1" } });
+    const past = after();
+    const r = await setup({ ORGS: ns(org), ACCOUNTS: ns(acc) }, past.waitUntil)("POST", `/work/results/${RID}/merge`, { body: { head: HEAD, at: Date.now() }, headers: { "idempotency-key": "k1" } });
     expect(r).toMatchObject({ status: 200, body: { protocol: 1 } });
+    // The reply did not wait for the branch.
+    expect(sent(mock)).not.toContain(DELETE);
+    await past.settle();
     expect(acc.mintGitHubInstallationToken).toHaveBeenCalledWith({ installationId: "5", repositories: ["r"], permissions: { contents: "write", pull_requests: "write", checks: "read" } });
     expect(sent(mock)).toEqual(["GET /pulls/7", CHECKS, "PUT /pulls/7/merge", "PUT /pulls/7/merge", REPO, BASED, DELETE]);
     expect(JSON.parse(mock.mock.calls[3]![1].body as string)).toMatchObject({ merge_method: "merge", sha: HEAD, commit_message: expect.stringMatching(/^Merged .*via OpenComputer\./) });
@@ -226,20 +235,20 @@ describe("merging a result's pull request (work 118)", () => {
     // Org hears of the merge before GitHub is asked for it.
     expect(org.mergeIntent).toHaveBeenCalledWith(expect.objectContaining({ kind: "member" }), RID, { head: HEAD });
     expect(org.mergeIntent.mock.invocationCallOrder[0]!).toBeLessThan(mock.mock.invocationCallOrder[2]!);
-    expect(org.mutate).toHaveBeenCalledWith(expect.objectContaining({ kind: "member" }), {
-      name: "result.merge",
-      args,
-      merge: { number: 7, base: "main", head: HEAD, method: "merge", sha: "b".repeat(40), branchDeleted: true },
-      idem: "k1",
-    });
+    const merge = { number: 7, base: "main", head: HEAD, method: "merge", sha: "b".repeat(40) };
+    expect(org.mutate).toHaveBeenNthCalledWith(1, expect.objectContaining({ kind: "member" }), { name: "result.merge", args, merge: { ...merge, branchDeleted: false }, idem: "k1" });
+    // The branch is added to the record after, outside the request's key (which would replay the first reply).
+    expect(org.mutate).toHaveBeenNthCalledWith(2, expect.objectContaining({ kind: "member" }), { name: "result.merge", args, merge: { ...merge, branchDeleted: true } });
   });
 
   it("the branch stays when another pull request is based on it, is not deleted twice when the repository deletes it, and only a branch that is gone counts", async () => {
-    const merge = async (after: Record<string, () => Response>) => {
+    const merge = async (tidy: Record<string, () => Response>) => {
       const org = orgOf(row());
-      const mock = github({ "GET /pulls/7": () => Response.json(open), [CHECKS]: runs(), "PUT /pulls/7/merge": () => Response.json({ sha: "b".repeat(40) }), ...after });
-      await setup({ ORGS: ns(org), ACCOUNTS: ns(accounts()) })("POST", `/work/results/${RID}/merge`, { body: {} });
-      return { deleted: (org.mutate.mock.calls[0] as unknown as [unknown, { merge: { branchDeleted: boolean } }])[1].merge.branchDeleted, calls: sent(mock).slice(3) };
+      const mock = github({ "GET /pulls/7": () => Response.json(open), [CHECKS]: runs(), "PUT /pulls/7/merge": () => Response.json({ sha: "b".repeat(40) }), ...tidy });
+      const past = after();
+      await setup({ ORGS: ns(org), ACCOUNTS: ns(accounts()) }, past.waitUntil)("POST", `/work/results/${RID}/merge`, { body: {} });
+      await past.settle();
+      return { deleted: (org.mutate.mock.calls.at(-1) as unknown as [unknown, { merge: { branchDeleted: boolean } }])[1].merge.branchDeleted, calls: sent(mock).slice(3) };
     };
     const off = () => Response.json({ delete_branch_on_merge: false });
     expect(await merge({ [REPO]: () => Response.json({ delete_branch_on_merge: true }) })).toEqual({ deleted: true, calls: [REPO] });
@@ -249,7 +258,9 @@ describe("merging a result's pull request (work 118)", () => {
     // A fork's branch is not ours to delete.
     const fork = orgOf(row());
     const mock = github({ "GET /pulls/7": () => Response.json({ ...open, head: { ...open.head, repo: { full_name: "them/r" } } }), [CHECKS]: runs(), "PUT /pulls/7/merge": () => Response.json({ sha: "b".repeat(40) }) });
-    await setup({ ORGS: ns(fork), ACCOUNTS: ns(accounts()) })("POST", `/work/results/${RID}/merge`, { body: {} });
+    const past = after();
+    await setup({ ORGS: ns(fork), ACCOUNTS: ns(accounts()) }, past.waitUntil)("POST", `/work/results/${RID}/merge`, { body: {} });
+    await past.settle();
     expect(sent(mock)).toHaveLength(3);
   });
 
@@ -263,7 +274,8 @@ describe("merging a result's pull request (work 118)", () => {
       expect(r.body.error.code).toBe("refused");
       return { ...r.body.error, calls: sent(mock), intents: org.mergeIntent.mock.calls.map((c) => (c as unknown[])[2]) };
     };
-    expect(await refusal({}, { head: "c".repeat(40) })).toMatchObject({ reason: "changed", head: HEAD, calls: ["GET /pulls/7"], intents: [] });
+    // The checks of the commit they saw were asked for beside the pull request, and are not used.
+    expect(await refusal({}, { head: "c".repeat(40) })).toMatchObject({ reason: "changed", head: HEAD, calls: ["GET /pulls/7", CHECKS.replace(HEAD, "c".repeat(40))], intents: [] });
     expect(await refusal({ draft: true })).toMatchObject({ reason: "draft" });
     expect(await refusal({ state: "closed" })).toMatchObject({ reason: "closed" });
     expect(await refusal({ mergeable: false })).toMatchObject({ reason: "conflicts", message: "The pull request conflicts with main." });
