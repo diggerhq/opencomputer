@@ -21,10 +21,11 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createReadStream, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createReadStream, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const UNAVAILABLE = 'offload not available on this host';
 const USAGE = 'usage: oc-offload --size s|m [--timeout MIN] [--artifact PATH]... -- <cmd>';
@@ -210,7 +211,16 @@ async function main() {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === new URL(import.meta.url).pathname) {
+// Real paths on both sides: sessions run it through /opt/slack-presence/current,
+// a symlink to the release, where argv[1] and import.meta.url differ.
+const isMain = (() => {
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+if (process.argv[1] && isMain) {
   main().then(
     (code) => process.exit(code),
     (e) => {

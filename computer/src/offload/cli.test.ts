@@ -11,9 +11,9 @@ import { describe, expect, it } from 'vitest';
 
 const CLI = path.resolve('bin/oc-offload');
 
-function run(args: string[], cwd: string, env: Record<string, string | undefined>) {
+function run(args: string[], cwd: string, env: Record<string, string | undefined>, cli = CLI) {
   return new Promise<{ code: number | null; out: string; err: string }>((resolve) => {
-    const p = spawn(process.execPath, [CLI, ...args], { cwd, env: { PATH: process.env.PATH, ...env } });
+    const p = spawn(process.execPath, [cli, ...args], { cwd, env: { PATH: process.env.PATH, ...env } });
     let out = '';
     let err = '';
     p.stdout.on('data', (d) => (out += d));
@@ -71,6 +71,13 @@ async function fakes(artifact: Buffer, exitCode = 0) {
 describe('oc-offload', () => {
   it('says offload is not available (exit 3) without a socket', async () => {
     const r = await run(['--size', 's', '--', 'make'], os.tmpdir(), {});
+    expect(r.code).toBe(3);
+    expect(r.err).toMatch(/^offload not available on this host/);
+  });
+  it('runs through a symlinked release directory, as /opt/slack-presence/current', async () => {
+    const current = path.join(mkdtempSync(path.join(os.tmpdir(), 'rel-')), 'current');
+    symlinkSync(path.resolve('.'), current);
+    const r = await run(['--size', 's', '--', 'make'], os.tmpdir(), {}, path.join(current, 'bin/oc-offload'));
     expect(r.code).toBe(3);
     expect(r.err).toMatch(/^offload not available on this host/);
   });
