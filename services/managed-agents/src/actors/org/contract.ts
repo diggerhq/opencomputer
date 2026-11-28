@@ -7,6 +7,12 @@ import type { Dead } from "../../durable/outbox.js";
 import type { Reply } from "../../durable/rpc-reply.js";
 import type { PublicComputerState } from "../computer/contract.js";
 import type { Summary } from "../session-log/contract.js";
+import type { Attachment, AttachmentMeta, AttachmentSpec } from "./attachments.js";
+
+export type { Attachment, AttachmentMeta, AttachmentSpec } from "./attachments.js";
+// The object store the API handler signs URLs of (work 126, section 5): Org's, so the route reaches it here.
+export { ATTACHMENT_BYTES_MAX } from "./limits.js";
+export { attachmentKey, attachmentsOf, type Attachments, type AttachmentsEnv } from "../../attachments/store.js";
 
 /** The mutation table: the API's `/work` routes match it (org/mutations/table.ts, which the SDK copies). */
 export { EDGE_MUTATIONS, matchMutation } from "./mutations/table.js";
@@ -85,6 +91,8 @@ export type CreateSession = CreateSessionBody & {
   turnId?: string;
   /** The request's trace, carried to the first turn; not part of the create's idempotency. */
   trace?: string;
+  /** With `input`: the first turn's attachments, reserved by the edge (`attachmentReserve`) before the create; what the turn carries. */
+  attachments?: AttachmentMeta[];
 };
 export interface SessionPatch {
   title?: string;
@@ -251,6 +259,17 @@ export interface OrgRpc {
   linkPerson(from: string, to: string): Promise<void>;
   /** For an operator (Computer's operator status): the owed calls that ran out of tries. */
   dead(): Promise<Dead[]>;
+
+  // attachments (work 126, org/attachments.ts)
+  /** `PUT …/attachments/{id}`, before any byte is sent: the row, `uploading`. `created: false`: the same row again. */
+  attachmentCreate(p: Principal, sessionId: string, id: string, spec: AttachmentSpec): Promise<Reply<{ attachment: Attachment; created: boolean }>>;
+  /** `POST …/complete` saw the object in the store: the row is `ready`. */
+  attachmentReady(id: string, etag: string): Promise<Reply<{ attachment: Attachment }>>;
+  attachmentRead(p: Principal, sessionId: string, id: string): Promise<Reply<{ attachment: Attachment }>>;
+  attachmentList(p: Principal, sessionId: string): Promise<Reply<{ attachments: Attachment[] }>>;
+  attachmentDelete(p: Principal, sessionId: string, id: string): Promise<Reply<Record<never, never>>>;
+  /** Before `SessionLog.accept` of a turn naming attachments: all or none are `attached`; what the turn carries. */
+  attachmentReserve(p: Principal, sessionId: string, turnId: string, messageId: string | null, ids: string[]): Promise<Reply<{ attachments: AttachmentMeta[] }>>;
 }
 
 // ------------------------------------------------------------------ the knowledge repository (org/repository.ts)

@@ -27,6 +27,14 @@ const CODES: Record<string, string> = {
   conflict: 'it changed meanwhile',
   not_found: 'it no longer exists',
   internal: 'something went wrong on our side',
+  // Attachments (work 126).
+  attachment_too_large: 'a file is over the size limit',
+  attachment_quota: 'this thread has no room for more files',
+  attachment_deleted: 'a file expired before it was sent',
+  attachment_not_ready: 'a file had not finished uploading',
+  attachment_not_found: 'a file is no longer here',
+  attachment_lost: 'the upload of a file was interrupted',
+  too_many_attachments: 'a message can carry at most 10 files',
 }
 
 export const OUT_OF_CREDITS = new Set(['insufficient_credits', 'http_402'])

@@ -27,6 +27,39 @@ export interface Storage {
   batch?(ops: ({ put: string; value: unknown } | { delete: string })[]): Promise<void>;
 }
 
+/** An attachment of a message not yet sent, from `attach` until its message is accepted. */
+export interface PendingAttachment {
+  /** `at_…`, made here. */
+  id: string;
+  sessionId: string;
+  name: string;
+  mimetype: string;
+  bytes: number;
+  /**
+   * `queued`: waiting for a slot or the network; `failed`: refused by the server, or its upload was
+   * cut by a reload (`attachment_lost`): remove it to send.
+   */
+  state: "queued" | "uploading" | "ready" | "failed";
+  /** 0 to 1 while `uploading`; 1 once `ready`. */
+  progress: number;
+  /** With `failed`: the refusal. */
+  error?: { code: string; reason: string };
+}
+
+/**
+ * A file's bytes on their way to a signed URL (work 126, K3). `fetch` reports no progress, so a
+ * browser host does the `PUT` with `XMLHttpRequest`. Sent with exactly these headers and no
+ * credential: the URL is its own authority, on whatever host it names. Rejects when the network
+ * does; an HTTP error is a reply. `signal` aborts it.
+ */
+export interface UploadRequest {
+  method: "PUT";
+  headers: Record<string, string>;
+  body: Blob;
+  onProgress(sent: number, total: number): void;
+  signal: AbortSignal;
+}
+
 export interface Signal<T> {
   get(): T;
   subscribe(cb: (value: T) => void): () => void;
@@ -45,7 +78,8 @@ export interface Principal {
 export type Pending =
   | { key: string; kind: "mutation"; name: MutationName; args: Record<string, unknown>; at: number }
   | { key: string; kind: "session"; sessionId: string; body: CreateSessionBody & { id: string; turnId?: string }; at: number }
-  | { key: string; kind: "turn"; sessionId: string; turnId: string; input: string; ifBusy?: IfBusy; at: number }
+  /** `attachments`: ids the entry waits for before it goes (work 126, D2). */
+  | { key: string; kind: "turn"; sessionId: string; turnId: string; input: string; ifBusy?: IfBusy; attachments?: string[]; at: number }
   | { key: string; kind: "answer"; sessionId: string; askId: string; answer: Answer; at: number }
   | { key: string; kind: "dismiss"; sessionId: string; askId: string; at: number }
   | { key: string; kind: "interrupt"; sessionId: string; at: number }
@@ -77,6 +111,11 @@ export interface ClientOptions {
   fetch(path: string, init?: RequestInit): Promise<Response>;
   connect(): Channel;
   storage: Storage;
+  /**
+   * Sends an attachment's bytes to `url`, an absolute signed URL, without credentials (work 126).
+   * Default: the global `fetch`, which reports no progress.
+   */
+  uploadTo?(url: string, req: UploadRequest): Promise<Response>;
   /** Keep a session's events in `storage` (section 26.3's "Remember this device"). Default: memory only. */
   keepEvents?: boolean;
   /** Runs `fn` as the one sender across tabs; a Web Lock in a browser. Default: runs it at once. */
@@ -117,7 +156,28 @@ export interface Client {
   deltas(sessionId: string): Stream<Delta>;
   mutate<N extends MutationName>(name: N, args: MutationArgs[N]): { settled: Promise<void> };
   createSession(body: CreateSessionBody): { id: string; turnId: string; settled: Promise<void> };
-  send(sessionId: string, input: string, o?: { ifBusy?: IfBusy }): { turnId: string; settled: Promise<void> };
+  /** `attachments`: ids from `attach`; the turn waits until every one is `ready` (work 126, D2). */
+  send(sessionId: string, input: string, o?: { ifBusy?: IfBusy; attachments?: string[] }): { turnId: string; settled: Promise<void> };
+  /**
+   * Uploads `file` to the session at once, ahead of its message (work 126). The id can name the
+   * session before `createSession` has sent it (D8). The bytes are held in memory until the message
+   * is accepted; the limits are the server's, and a file it refuses is `failed` with its reason.
+   * `state` follows the upload; `attachments()` lists them all.
+   */
+  attach(sessionId: string, file: Blob, o?: { name?: string }): { id: string; state: Signal<PendingAttachment> };
+  /**
+   * Every pending attachment, from storage too: after a reload a `ready` one is still `ready`, and
+   * one whose upload was not finished is `failed` (`attachment_lost`).
+   */
+  attachments(): Signal<PendingAttachment[]>;
+  /** Drops a pending attachment: the upload stops, and the server's row is deleted (best effort). */
+  removeAttachment(id: string): Promise<void>;
+  /**
+   * A signed URL of an attachment of a message (`GET …/url`), to show or, with `download`, to save.
+   * It is read without credentials and ends after a few minutes; the client keeps it until shortly
+   * before, so asking again is free. Throws `Refused`.
+   */
+  attachmentUrl(sessionId: string, id: string, o?: { download?: boolean }): Promise<string>;
   answer(sessionId: string, askId: string, answer: Answer): { settled: Promise<void> };
   dismiss(sessionId: string, askId: string): { settled: Promise<void> };
   interrupt(sessionId: string): { settled: Promise<void> };

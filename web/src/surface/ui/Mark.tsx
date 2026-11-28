@@ -3,10 +3,11 @@ import { cn } from '@/lib/utils'
 import type { Mark } from '../store/views'
 
 // The mark of spec section 3: dot (blocked), ring (ready), breathing dot
-// (working). Working is quiet on purpose: a muted dot that fades slowly.
+// (working). Only blocked is amber: it alone waits on the person. Working is
+// quiet on purpose: a muted dot that fades slowly.
 const MARK: Record<string, string> = {
   blocked: 'bg-status-pending',
-  ready: 'shadow-[inset_0_0_0_2px_var(--status-pending)]',
+  ready: 'shadow-[inset_0_0_0_2px_var(--muted-foreground)]',
   working:
     'bg-muted-foreground animate-breathe motion-reduce:animate-none motion-reduce:opacity-60',
 }

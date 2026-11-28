@@ -133,6 +133,14 @@ export interface CalvinWireConfig {
   key: string;
 }
 
+/** One attachment of a turn's message (work 126): the metadata Org reserved; the bytes are at the signed URL `GET …/attachments/{id}/url` answers. */
+export interface CalvinApiAttachment {
+  id: string;
+  name: string;
+  mimetype: string;
+  bytes: number;
+}
+
 export type CalvinGatewayToHostV4 =
   /** Claim and fork for `session` with no input; answered by `started`. */
   | {
@@ -153,6 +161,8 @@ export type CalvinGatewayToHostV4 =
       sessionId: string;
       method: string;
       params: unknown;
+      /** A turn's attachments (work 126): what the message carries, beside `params` (the runner takes an unknown param as an error). */
+      attachments?: CalvinApiAttachment[];
       actor: CalvinApiActor;
       member: string;
       idempotencyKey?: string;

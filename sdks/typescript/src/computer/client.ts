@@ -1,18 +1,20 @@
 // `createClient` (section 42.1): the socket of section 38.3, the three streams, the write queue.
 //
-// Storage keys: `meta` (the client id), `queue/<ms>-<key>`, `feed/cursor`, `feed/row/<kind>/<id>`,
-// and with `keepEvents` `ev/<session>/cursor`, `ev/<session>/prev` and `ev/<session>/e/<seq>`.
+// Storage keys: `meta` (the client id), `queue/<ms>-<key>`, `att/<id>` (a pending attachment),
+// `feed/cursor`, `feed/row/<kind>/<id>`, and with `keepEvents` `ev/<session>/cursor`,
+// `ev/<session>/prev` and `ev/<session>/e/<seq>`. The bytes of a pending attachment are in memory only.
 //
 // Nothing starts before `ready`: a stream subscribed earlier starts then, and a write made earlier
 // throws (the queue comes from storage).
 
+import { ATTACHMENTS_PER_MESSAGE, createAttachments, type StoredAttachment } from "./attachments.js";
 import { createCtx, refusal } from "./ctx.js";
 import { createEvents } from "./events.js";
 import { createFeed } from "./feed.js";
 import { makeId } from "./ids.js";
 import { createQueue } from "./queue.js";
 import { emitter, signal, type Emitter } from "./signal.js";
-import type { Channel, Client, ClientOptions, Stream } from "./client-interface.js";
+import { Refused, type Channel, type Client, type ClientOptions, type Stream } from "./client-interface.js";
 import type { Row } from "./feed-rows.js";
 import type { UploadReply } from "./http-bodies.js";
 import type { Delta, ServerFrame } from "./socket-frames.js";
@@ -30,7 +32,9 @@ export function createClient(o: ClientOptions): Client {
   const status = signal<"connecting" | "online" | "offline">("connecting");
   const feed = createFeed(ctx, (frame) => queue.onFeed(frame));
   const events = createEvents(ctx, (id, evs) => queue.onEvents(id, evs));
-  const queue = createQueue(ctx, feed);
+  const attachments = createAttachments(ctx);
+  const queue = createQueue(ctx, feed, attachments);
+  attachments.changed.add(() => queue.pump());
   const watches = new Map<string, Watch>();
   const failures = queue.failures;
 
@@ -129,7 +133,13 @@ export function createClient(o: ClientOptions): Client {
 
   const ready = (async () => {
     const s = o.storage;
-    const [meta, cursor, rows, queued] = await Promise.all([s.get("meta"), s.get("feed/cursor"), s.list("feed/row/"), s.list("queue/")]);
+    const [meta, cursor, rows, queued, attached] = await Promise.all([
+      s.get("meta"),
+      s.get("feed/cursor"),
+      s.list("feed/row/"),
+      s.list("queue/"),
+      s.list("att/"),
+    ]);
     if (ctx.closed) return;
     const m = (meta as { clientId: string } | undefined) ?? { clientId: makeId("cl", ctx.random) };
     if (!meta) ctx.write([{ put: "meta", value: m }]);
@@ -137,6 +147,7 @@ export function createClient(o: ClientOptions): Client {
     feed.load((cursor as string | null | undefined) ?? null, rows.map(([, r]) => r as Row));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     queue.load(queued.map(([, v]) => v as any));
+    attachments.load(attached.map(([, v]) => v as StoredAttachment));
     connect();
     queue.pump();
   })();
@@ -156,6 +167,10 @@ export function createClient(o: ClientOptions): Client {
         };
       },
     };
+  }
+
+  function tooMany(ids: string[] | undefined): void {
+    if (ids && ids.length > ATTACHMENTS_PER_MESSAGE) throw new Refused("too_many_attachments", `a message can carry at most ${ATTACHMENTS_PER_MESSAGE} files`);
   }
 
   function close(): void {
@@ -181,6 +196,7 @@ export function createClient(o: ClientOptions): Client {
     deltas: (sessionId) => whenReady(() => deltas(sessionId)),
     mutate: (name, args) => queue.add({ kind: "mutation", name, args: args as Record<string, unknown> }),
     createSession(body) {
+      tooMany(body.attachments);
       const id = body.id ?? makeId("cs", ctx.random);
       const turnId = body.turnId ?? makeId("tn", ctx.random);
       // Without input there is no first turn to name.
@@ -188,10 +204,16 @@ export function createClient(o: ClientOptions): Client {
       return { id, turnId, settled };
     },
     send(sessionId, input, opts) {
+      tooMany(opts?.attachments);
       const turnId = makeId("tn", ctx.random);
-      const { settled } = queue.add({ kind: "turn", sessionId, turnId, input, ifBusy: opts?.ifBusy }, turnId);
+      const p = { kind: "turn" as const, sessionId, turnId, input, ifBusy: opts?.ifBusy, attachments: opts?.attachments?.length ? opts.attachments : undefined };
+      const { settled } = queue.add(p, turnId);
       return { turnId, settled };
     },
+    attach: (sessionId, file, opts) => attachments.attach(sessionId, file, opts?.name),
+    attachments: () => attachments.list,
+    removeAttachment: (id) => attachments.remove(id),
+    attachmentUrl: (sessionId, id, opts) => attachments.url(sessionId, id, opts?.download === true),
     answer: (sessionId, askId, answer) => ({ settled: queue.add({ kind: "answer", sessionId, askId, answer }).settled }),
     dismiss: (sessionId, askId) => ({ settled: queue.add({ kind: "dismiss", sessionId, askId }).settled }),
     interrupt: (sessionId) => ({ settled: queue.add({ kind: "interrupt", sessionId }).settled }),

@@ -19,6 +19,7 @@ import path from 'node:path';
 import { log as logger, log } from '../../log.js';
 import type { Actor, TurnError } from '../../api/schema-objects.js';
 import type { SessionLog } from '../../api/session-log.js';
+import type { ApiAttachment } from '../../protocol.js';
 import { mintId } from '../../session-ids.js';
 import { toolTitle } from '../format.js';
 import type { HarnessEvent } from '../harness/types.js';
@@ -39,6 +40,8 @@ export interface SentFrom {
   recorded?: boolean;
   /** The turn it interrupts, as it was when the interrupt began (the harness may end it before the message is recorded). */
   interrupts?: string;
+  /** The message's attachments (work 126), as its `message.received` records them; absent: none. */
+  attachments?: ApiAttachment[];
 }
 
 /** What the tap needs from the runner. */
@@ -208,7 +211,7 @@ export class Tap implements SessionTap {
     if (steer && this.cur) {
       if (from?.recorded) return;
       const named = from?.turnId ? { messageId: from.turnId } : {};
-      const seq = this.append('message.received', { input: text, ifBusy: 'steer', delivery: 'steered', interruptedTurnIds: [], declinedAskIds: [], ...named }, this.cur.id, actor);
+      const seq = this.append('message.received', { input: text, ifBusy: 'steer', delivery: 'steered', interruptedTurnIds: [], declinedAskIds: [], ...named, attachments: from?.attachments ?? [] }, this.cur.id, actor);
       this.steers.push({ actor, seq });
       return;
     }
@@ -218,7 +221,7 @@ export class Tap implements SessionTap {
     if (this.cur) this.cancelling ??= 'interrupted';
     if (!from?.recorded) {
       const ifBusy = from?.ifBusy ?? (interrupted.length ? 'interrupt' : 'steer');
-      this.append('message.received', { input: text, ifBusy, delivery: 'started', interruptedTurnIds: interrupted, declinedAskIds: [] }, id, actor);
+      this.append('message.received', { input: text, ifBusy, delivery: 'started', interruptedTurnIds: interrupted, declinedAskIds: [], attachments: from?.attachments ?? [] }, id, actor);
     }
     this.next = id;
   }
@@ -226,7 +229,7 @@ export class Tap implements SessionTap {
   replied(text: string, slackUser: string | undefined, declined: string[], from?: SentFrom): number {
     const actor = from?.actor ?? this.h.actorOf(slackUser);
     const named = from?.turnId ? { messageId: from.turnId } : {};
-    const data = { input: text, ifBusy: from?.ifBusy ?? 'steer', delivery: 'steered', interruptedTurnIds: [], declinedAskIds: declined, ...named };
+    const data = { input: text, ifBusy: from?.ifBusy ?? 'steer', delivery: 'steered', interruptedTurnIds: [], declinedAskIds: declined, ...named, attachments: from?.attachments ?? [] };
     const seq = this.append('message.received', data, this.turnId(), actor);
     this.steers.push({ actor, seq });
     return seq;

@@ -286,7 +286,7 @@ export default defineConfig({
         ],
         test: {
           name: "computer",
-          include: ["test/computer-routes.test.ts", "test/computer-operator.test.ts", "test/computer-pool-probe-do.test.ts", "test/computer-agent-routes.test.ts", "test/computer-size.test.ts", "test/computer-self-managed.test.ts", "test/computer-disk.test.ts", "test/computer-model-access-do.test.ts", "test/computer-model-profiles-do.test.ts", "test/computer-hosted-do.test.ts", "test/computer-tracks.test.ts"],
+          include: ["test/computer-routes.test.ts", "test/computer-operator.test.ts", "test/computer-pool-probe-do.test.ts", "test/computer-agent-routes.test.ts", "test/computer-size.test.ts", "test/computer-self-managed.test.ts", "test/computer-disk.test.ts", "test/computer-model-access-do.test.ts", "test/computer-model-profiles-do.test.ts", "test/computer-hosted-do.test.ts", "test/computer-tracks.test.ts", "test/computer-attachment-objects.test.ts"],
         },
       },
       {

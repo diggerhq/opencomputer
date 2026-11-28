@@ -1,4 +1,4 @@
-import type { ApiEvent, Ask, InboxEntry, OpRow, Pending, Subagent } from '@opencomputer/sdk/computer'
+import type { ApiEvent, Ask, AttachmentRef, InboxEntry, OpRow, Pending, PendingAttachment, Subagent } from '@opencomputer/sdk/computer'
 
 // Folds a session's events into what a conversation shows: people's messages,
 // the agent's replies, its steps as single lines, its asks, and the subagents
@@ -8,8 +8,23 @@ import type { ApiEvent, Ask, InboxEntry, OpRow, Pending, Subagent } from '@openc
 // Where a message was written, when it was not here.
 const VIA: Record<string, string> = { slack: 'Slack', opc: 'CLI', api: 'API' }
 
+// A file of a person's message (work 126): what the event says of it, or, while
+// the message is still being sent, how far its upload is.
+export type ItemAttachment = AttachmentRef & { progress?: number; upload?: PendingAttachment['state']; error?: string }
+
 export type Item =
-  | { kind: 'user'; key: string; text: string; author: string | null; via?: string; at: string; state?: Delivery; reason?: string; behind?: Behind }
+  | {
+      kind: 'user'
+      key: string
+      text: string
+      author: string | null
+      via?: string
+      at: string
+      state?: Delivery
+      reason?: string
+      behind?: Behind
+      attachments?: ItemAttachment[]
+    }
   // `streaming`: still being written; its key is the one it keeps once whole.
   | { kind: 'agent'; key: string; text: string; at: string; streaming?: boolean }
   // A turn's work: its steps, thinking and earlier messages, in order, drawn
@@ -21,6 +36,9 @@ export type Item =
   | { kind: 'subagent'; key: string; sub: Subagent; steps: Step[]; activity: string | null; at: string }
   // A line that is not a message: a structural change, "Stopped", a failure.
   | { kind: 'line'; key: string; text: string; tone: 'muted' | 'error'; at: string; undo?: string; undone?: boolean }
+  // A track's threads, where they joined it, drawn as one group of rows. `ids`:
+  // their session ids, comma-joined, so an unchanged group compares equal.
+  | { kind: 'threads'; key: string; ids: string; at: string }
 
 // Where the person's own message is on its way to the agent (work 134). No
 // state: the agent has read it, and it is drawn where it did.
@@ -148,13 +166,16 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string, open?:
       case 'message.received': {
         // Input the platform writes is not drawn as a message (R15).
         if (e.actor?.via === 'platform' || e.actor?.id === 'platform') break
-        const text = withoutSlackHeader(str(d.input))
+        const text = withoutSlackHeader(str(d.input)) ?? ''
+        // The event's own array is kept: an unchanged item compares equal by field.
+        const attachments = Array.isArray(d.attachments) && d.attachments.length ? (d.attachments as ItemAttachment[]) : undefined
         // Journals before the computer stopped using the git author name carry " via Computer".
         const name = e.actor?.name?.replace(/ via Computer$/, '')
-        if (!text) break
+        if (!text && !attachments) break
         // What a track's agent passes to a thread is a marked line, not the person speaking (G4).
-        if (e.actor?.via === 'agent') items.push({ kind: 'line', key: messageKey(e), text, tone: 'muted', at: e.createdAt })
-        else {
+        if (e.actor?.via === 'agent') {
+          if (text) items.push({ kind: 'line', key: messageKey(e), text, tone: 'muted', at: e.createdAt })
+        } else {
           const item: User = {
             kind: 'user',
             key: messageKey(e),
@@ -162,6 +183,7 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string, open?:
             author: name && name !== e.actor?.id && e.actor?.id !== me ? name : null,
             via: e.actor?.via && VIA[e.actor.via],
             at: e.createdAt,
+            ...(attachments && { attachments }),
           }
           const delivery = str(d.delivery)
           if ((delivery === 'steered' || delivery === 'queued') && e.turnId && !turns.get(e.turnId)?.settled)
@@ -308,22 +330,41 @@ const messageKey = (e: ApiEvent): string => {
 
 // The person's own messages that no event shows yet: queued here, waiting in
 // the session's inbox, or refused by the host (spec 40.2, steps 6 and 7).
-export function unsent(events: readonly ApiEvent[], pending: readonly Pending[], inbox: readonly InboxEntry[], sid: string): Item[] {
+// `attachments`: the client's pending files, for how far a message's uploads are.
+export function unsent(
+  events: readonly ApiEvent[],
+  pending: readonly Pending[],
+  inbox: readonly InboxEntry[],
+  sid: string,
+  attachments: readonly PendingAttachment[] = [],
+): Item[] {
   const seen = new Set<string>()
   for (const e of events) if (e.type === 'message.received') seen.add(messageKey(e))
   const out: Item[] = []
   const mine = new Set<string>()
+  const files = (ids: string[] | undefined): Pick<Item & { kind: 'user' }, 'attachments'> => {
+    if (!ids?.length) return {}
+    const held = new Map(attachments.map((a) => [a.id, a]))
+    return {
+      attachments: ids.map((id) => {
+        const a = held.get(id)
+        return a
+          ? { id, name: a.name, mimetype: a.mimetype, bytes: a.bytes, progress: a.progress, upload: a.state, error: a.error?.reason }
+          : { id, name: 'file', mimetype: '', bytes: 0 }
+      }),
+    }
+  }
   for (const p of pending) {
     if (p.kind === 'session' && p.sessionId === sid) {
       // Created without a message (files go first): nothing of the person's to show.
       if (!p.body.turnId || p.body.input === undefined) continue
       mine.add(p.body.turnId)
       if (!seen.has(p.body.turnId))
-        out.push({ kind: 'user', key: p.body.turnId, text: p.body.input, author: null, at: new Date(p.at).toISOString(), state: 'sending' })
+        out.push({ kind: 'user', key: p.body.turnId, text: p.body.input, author: null, at: new Date(p.at).toISOString(), state: 'sending', ...files(p.body.attachments) })
     } else if (p.kind === 'turn' && p.sessionId === sid) {
       mine.add(p.turnId)
       if (!seen.has(p.turnId))
-        out.push({ kind: 'user', key: p.turnId, text: p.input, author: null, at: new Date(p.at).toISOString(), state: 'sending' })
+        out.push({ kind: 'user', key: p.turnId, text: p.input, author: null, at: new Date(p.at).toISOString(), state: 'sending', ...files(p.attachments) })
     }
   }
   for (const i of inbox) {

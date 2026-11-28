@@ -5,8 +5,9 @@ import { Sparkles } from 'lucide-react'
 import { Panel } from '@/components/panel'
 import { Button } from '@/components/ui/button'
 import { useCreditState } from '@/hooks/useCreditState'
+import { useBillingPromo } from '@/hooks/useBillingPromo'
 import {
-  PLAN_OFFERS,
+  PLAN_NAMES,
   UPGRADE_PLAN,
   billingOnrampV2Enabled,
   formatMinutes,
@@ -56,6 +57,8 @@ function PostSessionUpsellImpl({
 }) {
   const { billing, usagePlan, isHalted, creditsRemainingCents } =
     useCreditState()
+  const price = useBillingPromo().pricing(UPGRADE_PLAN)
+  const deal = price.normalPriceUsd != null
   const minutes = billing?.workMinutes ?? null
   const spentMinutes = minutes
     ? Math.max(0, minutes.granted - minutes.remaining)
@@ -100,8 +103,18 @@ function PostSessionUpsellImpl({
             {formatMinutes(minutes.remaining)} left.
           </p>
           <p className="text-muted-foreground mt-0.5">
-            {planPriceLabel(UPGRADE_PLAN)} gives you{' '}
-            {formatMinutes(PLAN_OFFERS[UPGRADE_PLAN].minutes)} a month.
+            {deal ? (
+              <>
+                Black Friday: {PLAN_NAMES[UPGRADE_PLAN]} at ${price.priceUsd}
+                /mo (<s>${price.normalPriceUsd}</s>) gives you{' '}
+                {formatMinutes(price.minutes)} a month.
+              </>
+            ) : (
+              <>
+                {planPriceLabel(UPGRADE_PLAN)} gives you{' '}
+                {formatMinutes(price.minutes)} a month.
+              </>
+            )}
           </p>
         </div>
       </div>
@@ -117,7 +130,9 @@ function PostSessionUpsellImpl({
             })
           }
         >
-          Upgrade to {planPriceLabel(UPGRADE_PLAN)}
+          {deal
+            ? `Upgrade to ${PLAN_NAMES[UPGRADE_PLAN]} ($${price.priceUsd}/mo)`
+            : `Upgrade to ${planPriceLabel(UPGRADE_PLAN)}`}
         </Link>
       </Button>
     </Panel>

@@ -17,7 +17,12 @@ import {
 } from './schema-objects.js';
 
 const Key = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255));
-const Input = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100_000));
+/**
+ * A message's text. May be empty (work 126): a message can be its attachments alone, which ride beside the params
+ * (`CallContext.attachments`), so the schema cannot tell an empty message from one with files; the writer refuses
+ * one with neither.
+ */
+const Input = Schema.String.check(Schema.isMaxLength(100_000));
 const Timing = Schema.Struct({ serverUs: Count });
 const Metadata = Schema.Record(Schema.String.check(Schema.isMaxLength(40)), Schema.String.check(Schema.isMaxLength(500)));
 const sid = { sessionId: SessionId };

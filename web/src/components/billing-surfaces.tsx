@@ -12,12 +12,12 @@ import {
 import { Button } from '@/components/ui/button'
 import { useCreditState } from '@/hooks/useCreditState'
 import { useBillingActions } from '@/hooks/useBillingActions'
+import { useBillingPromo } from '@/hooks/useBillingPromo'
 import {
   BILLING_ACTION_LABELS,
   CREDIT_PACKS_USD,
   PAID_PLANS,
   PLAN_NAMES,
-  PLAN_OFFERS,
   billingActionHref,
   billingOnrampV2Enabled,
   billingPillText,
@@ -27,6 +27,7 @@ import {
   trackWarningShown,
   warningNotice,
 } from '@/lib/billing-onramp'
+import { promoHref } from '@/lib/promo'
 import { cn } from '@/lib/utils'
 
 // The app-shell billing surfaces of serverless-agents-ws 086 ("Surfaces"):
@@ -37,6 +38,7 @@ export const BillingPill = SELFHOST ? () => null : BillingPillImpl
 
 function BillingPillImpl({ className }: { className?: string }) {
   const { billing } = useCreditState()
+  const { applies: deal } = useBillingPromo()
   const text = billing ? billingPillText(billing) : null
   if (!billingOnrampV2Enabled || !text) return null
   // The trial pill is filled and asks to upgrade, so a trial org can't miss it;
@@ -57,24 +59,31 @@ function BillingPillImpl({ className }: { className?: string }) {
       {text}
       {trial && (
         <span className="bg-primary-foreground text-primary rounded-full px-2 py-0.5 font-sans font-semibold">
-          Upgrade
+          {deal ? 'Upgrade · 50% off' : 'Upgrade'}
         </span>
       )}
     </Link>
   )
 }
 
-export const BillingWarningBanner = SELFHOST ? () => null : BillingWarningBannerImpl
+export const BillingWarningBanner = SELFHOST
+  ? () => null
+  : BillingWarningBannerImpl
 
 function BillingWarningBannerImpl() {
   const location = useLocation()
   const { billing, warning } = useCreditState()
+  const promo = useBillingPromo()
   const onBilling = location.pathname.startsWith('/billing')
   useEffect(() => {
     if (warning) trackWarningShown(warning)
   }, [warning])
   if (!billingOnrampV2Enabled || !warning || !billing) return null
   const notice = warningNotice(warning, billing)
+  // A trial running out while the deal runs is the best moment to offer it.
+  const pro = promo.pricing('pro')
+  const deal =
+    promo.applies && warning.startsWith('trial_') && pro.normalPriceUsd != null
   const urgent = warning === 'payment_failed'
   return (
     <div
@@ -89,12 +98,19 @@ function BillingWarningBannerImpl() {
       <CircleAlert className="size-4 shrink-0" />
       <span>
         {notice.text}{' '}
+        {deal
+          ? `Black Friday: Pro is $${pro.priceUsd}/mo with ${formatMinutes(pro.minutes)}. `
+          : null}
         {onBilling ? null : (
           <Link
-            to={billingActionHref(notice.action, 'warning')}
+            to={
+              deal
+                ? promoHref('pro', 'warning')
+                : billingActionHref(notice.action, 'warning')
+            }
             className="font-semibold underline underline-offset-2"
           >
-            {BILLING_ACTION_LABELS[notice.action]}
+            {deal ? 'Claim the deal' : BILLING_ACTION_LABELS[notice.action]}
           </Link>
         )}
       </span>
@@ -158,7 +174,11 @@ export function HaltNoticeBody({
   title?: (text: string) => ReactNode
   description?: (text: string) => ReactNode
 }) {
-  const notice = haltNotice(reason)
+  const promo = useBillingPromo()
+  const notice = haltNotice(reason, {
+    pro: promo.pricing('pro').priceUsd,
+    max: promo.pricing('max').priceUsd,
+  })
   const actions = useBillingActions({ from, usagePlan })
   // Never offer the plan the org is already on (out of credits on Max).
   const plans = PAID_PLANS.filter(
@@ -174,22 +194,32 @@ export function HaltNoticeBody({
         if (action === 'plans' && plans.length > 0) {
           return (
             <div key={action} className="grid gap-2 sm:grid-cols-2">
-              {plans.map((plan) => (
-                <Button
-                  key={plan}
-                  className="h-auto flex-col items-start gap-0.5 py-2.5"
-                  variant={plan === 'pro' ? 'default' : 'outline'}
-                  disabled={actions.pending}
-                  onClick={() => actions.subscribe.mutate(plan)}
-                >
-                  <span>
-                    {PLAN_NAMES[plan]} · ${PLAN_OFFERS[plan].priceUsd}/mo
-                  </span>
-                  <span className="text-xs font-normal opacity-80">
-                    {formatMinutes(PLAN_OFFERS[plan].minutes)} a month
-                  </span>
-                </Button>
-              ))}
+              {plans.map((plan) => {
+                const price = promo.pricing(plan)
+                return (
+                  <Button
+                    key={plan}
+                    className="h-auto flex-col items-start gap-0.5 py-2.5"
+                    variant={plan === 'pro' ? 'default' : 'outline'}
+                    disabled={actions.pending}
+                    onClick={() => actions.subscribe.mutate(plan)}
+                  >
+                    <span>
+                      {PLAN_NAMES[plan]} ·{' '}
+                      {price.normalPriceUsd != null ? (
+                        <s className="font-normal opacity-70">
+                          ${price.normalPriceUsd}
+                        </s>
+                      ) : null}{' '}
+                      ${price.priceUsd}/mo
+                    </span>
+                    <span className="text-xs font-normal opacity-80">
+                      {formatMinutes(price.minutes)} a month
+                      {price.normalPriceUsd != null ? ' · Black Friday' : ''}
+                    </span>
+                  </Button>
+                )
+              })}
             </div>
           )
         }

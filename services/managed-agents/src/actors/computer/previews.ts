@@ -12,7 +12,7 @@
 // 127.0.0.1:7070, and the host runs `cloudflared tunnel run` with the token
 // alone. Names live in their own PreviewDurableObject (src/previews), the
 // public source of truth; the `previews` table here is this computer's copy,
-// for the host proxy's port allow-list, the 50-name limit and Wake.
+// for the host proxy's port allow-list, the name limit and Wake.
 //
 // Work 084: the same tunnel gains a second hostname, `<tunnelId>.w.opencomputer.dev`,
 // for the wire (the relay on 127.0.0.1:7071, paths `/connect` and `/files`
@@ -28,7 +28,7 @@ import type { CalvinGatewayToHost } from "../../host-protocol/frames.js";
 import type { CalvinPreviewConfig, CalvinPreviewRequest, CalvinPreviewResult } from "../../host-protocol/previews.js";
 
 /** Names one organization may hold at once. */
-export const PREVIEW_NAME_LIMIT = 50;
+export const PREVIEW_NAME_LIMIT = 1000;
 /** Wakes from a preview's Wake button, per computer, per PREVIEW_WAKE_WINDOW_MS. */
 export const PREVIEW_WAKE_LIMIT = 6;
 export const PREVIEW_WAKE_WINDOW_MS = 3600_000;

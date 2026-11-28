@@ -58,8 +58,9 @@ async function same(name: string, before: Step[], after: Step[], first?: string)
 }
 
 describe("storage steps collapsed before the first deploy", () => {
+  // The folded step alone: the attachment table (work 126) is a step of its own, after the fold.
   it("Org: a fresh store has the schema and the carry-over alarms the eight steps gave it", () => same("collapse-org", ORG_STEPS, ORG.slice(0, 1)));
-  it("Org: a store that stopped before `slack_access_default` under the old steps is completed", async () => {
+  it("Org: a store that stopped before `slack_access_default` under the old steps is completed, with the attachment table", async () => {
     // The first six of the eight: through `api_access_default`, as a development stack held it.
     const stopped = await fresh("collapse-org-stopped", (sql) => {
       migrate(sql, ORG_STEPS.slice(0, 6));
@@ -67,12 +68,22 @@ describe("storage steps collapsed before the first deploy", () => {
       completeFolded(sql);
       completeFolded(sql);
     });
+    // All eight: a count past every step since, so the attachment step never runs by count.
+    const whole = await fresh("collapse-org-eight", (sql) => {
+      migrate(sql, ORG_STEPS);
+      migrate(sql, ORG);
+      completeFolded(sql);
+    });
     const now = await fresh("collapse-org-whole", (sql) => {
       migrate(sql, ORG);
       completeFolded(sql);
     });
     expect(stopped.applied).toBe(6);
+    expect(whole.applied).toBe(8);
+    expect(now.applied).toBe(ORG.length);
+    expect(Object.keys(now.shape.tables)).toContain("attachment");
     expect(stopped.shape).toEqual(now.shape);
+    expect(whole.shape).toEqual(now.shape);
   });
   it("Slack: a fresh store has the schema the four steps gave it", () => same("collapse-slack", SLACK_STEPS, SLACK));
   it("SessionLog: on its production tables, the two steps and the one give the same schema", () =>

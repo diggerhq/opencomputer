@@ -1,7 +1,8 @@
-import { useMemo, type ComponentProps } from 'react'
+import { useContext, useMemo, type ComponentProps } from 'react'
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { cn } from '@/lib/utils'
+import { MarkdownLinkContext } from './markdown-link'
 import { MermaidBlock } from './MermaidBlock'
 import { remarkFenceClosed } from './mermaid'
 
@@ -72,6 +73,22 @@ export function AgentMarkdown({
 
 const REMARK_PLUGINS = [remarkGfm, remarkFenceClosed]
 
+// A link, or what the markdown's reader draws in its place (markdown-link.ts).
+function Anchor({ children, ...props }: ComponentProps<'a'>) {
+  const link = useContext(MarkdownLinkContext)
+  const plain = (
+    <a
+      className="underline decoration-current/40 underline-offset-3 transition-colors hover:decoration-current"
+      target="_blank"
+      rel="noreferrer"
+      {...props}
+    >
+      {children}
+    </a>
+  )
+  return link ? link(props.href, plain) : plain
+}
+
 // Made once per size, not per render: a component made anew each render is a
 // new type to React, which would remount every block, and a diagram with it,
 // on each token of a streaming reply.
@@ -136,16 +153,7 @@ function markdownComponents(
         {...props}
       />
     ),
-    a: ({ children, ...props }) => (
-      <a
-        className="underline decoration-current/40 underline-offset-3 transition-colors hover:decoration-current"
-        target="_blank"
-        rel="noreferrer"
-        {...props}
-      >
-        {children}
-      </a>
-    ),
+    a: (props) => <Anchor {...props} />,
     code: (props) => (
       <code
         className="bg-muted text-strong rounded px-1 py-0.5 font-mono text-[0.85em]"

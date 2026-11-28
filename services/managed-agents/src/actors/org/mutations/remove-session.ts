@@ -1,6 +1,7 @@
 // Removing a session and every row that names it.
 
 import { owed } from "../../../durable/outbox.js";
+import { removeForSession } from "../attachments.js";
 import type { SessionRec } from "../records.js";
 import type { Tx } from "../tx.js";
 
@@ -24,4 +25,6 @@ export function removeSession(tx: Tx, s: SessionRec): void {
   owed.drop(tx.sql, { key: `start:${s.id}` });
   tx.stop(s.id, s.machine);
   tx.destroy(s.id);
+  // Its attachments go with it: the objects as one owed call (work 126).
+  removeForSession(tx.sql, tx.now, s.id);
 }

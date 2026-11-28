@@ -25,7 +25,7 @@ async function served(extra: WriteHandlers = {}) {
     call: dispatch(log, {
       'turns.send': (p, ctx) => {
         const turnId = mintId('tn');
-        log.append('message.received', { input: p.input, ifBusy: 'queue', delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [] }, { turnId, actor: ctx.actor });
+        log.append('message.received', { input: p.input, ifBusy: 'queue', delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [], attachments: [] }, { turnId, actor: ctx.actor });
         const e = log.append('turn.queued', { position: 1, trigger: 'message', subagentId: null }, { turnId, actor: ctx.actor });
         return { result: { turn: log.fold.turn(turnId), delivery: 'queued', duplicate: false, seq: e.seq } };
       },
@@ -77,6 +77,17 @@ describe('serveApi / dialApi', () => {
     expect(out.result).toMatchObject({ session: { id: sid } });
     expect((await c.call('sessions.get', { sessionId: mintId('cs') }, ANN_CTX)).error?.code).toBe('session_not_found');
     expect(server.connections()).toBe(1);
+  });
+
+  it("a call's attachments (work 126) cross the socket in the frame, outside params, and reach the handler's context", async () => {
+    const seen: unknown[] = [];
+    const { sid, sock } = await served({ 'turns.send': (_p, ctx) => (seen.push(ctx.attachments), { result: { ok: true } }) });
+    const c = await dialApi(sock, TOKEN);
+    cleanups.push(() => c.close());
+    const attachments = [{ id: 'at_1', name: 'a.png', mimetype: 'image/png', bytes: 3 }];
+    expect((await c.call('turns.send', { sessionId: sid, input: 'x' }, { ...ANN_CTX, attachments })).result).toEqual({ ok: true });
+    expect((await c.call('turns.send', { sessionId: sid, input: 'x' }, ANN_CTX)).result).toEqual({ ok: true });
+    expect(seen).toEqual([attachments, undefined]);
   });
 
   it('closes a connection with a wrong token or another first frame', async () => {

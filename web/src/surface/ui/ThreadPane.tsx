@@ -13,6 +13,7 @@ import { ACTS, BLOCK, COMPOSER, HD, IN } from './pane-classes'
 import { mergeable, pullNumber, refusalOf } from '../store/pulls'
 import { resultDetail, resultTitle } from './result-text'
 import { useConfirm } from './use-confirm'
+import { MergeButton } from './MergeButton'
 import { ResultIcon } from './ResultIcon'
 import { Rich } from './Rich'
 import { Tip } from './Tip'
@@ -217,18 +218,7 @@ function Results({
                   </small>
                 )}
               </Button>
-              {merge && (
-                <Button
-                  variant="secondary"
-                  size="xs"
-                  data-merge
-                  className="border-background rounded-l-none border-l"
-                  title={`Merge #${pullNumber(r)} into its base branch`}
-                  onClick={() => surface.merge(r.id)}
-                >
-                  Merge
-                </Button>
-              )}
+              <MergeButton result={r} className="border-background rounded-l-none border-l" />
             </span>
           )
         })}
@@ -313,18 +303,20 @@ export function ThreadPane({ sid }: { sid: string }) {
   const settings = thread.session.settings
   const working = status === 'running' || status === 'starting'
 
-  // A typed reply to a single open question is its answer (T3).
+  // A typed reply to a single open question is its answer (T3); one with
+  // files is a message, since an answer carries none.
   const reply = (text: string, e: { meta: boolean }) => {
     const ask = thread.ask
     const qs =
       ask?.kind === 'question'
         ? ((ask.question?.questions ?? []) as { id?: string }[])
         : []
-    if (ask && qs.length === 1)
+    const files = surface.get().draftAttachments[`t:${sid}`]?.length
+    if (ask && qs.length === 1 && !files)
       surface.answer(sid, ask.id, {
         answers: [{ questionId: qs[0].id ?? '0', choices: [], text }],
       })
-    else surface.send(sid, text, { now: e.meta })
+    else surface.send(sid, text, { now: e.meta, draftKey: `t:${sid}` })
   }
 
   const menu = (): MenuItem[] => {
@@ -488,7 +480,6 @@ export function ThreadPane({ sid }: { sid: string }) {
             : 'Reply in this thread…'
         }
         onSend={reply}
-        onAttach={(text, files) => surface.sendWithFiles(sid, text, files)}
         className={COMPOSER}
         // A thread from Slack keeps the settings Slack gave it.
         tools={
