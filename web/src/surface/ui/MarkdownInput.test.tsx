@@ -101,9 +101,59 @@ describe('the composer text', () => {
     expect(view.contentDOM.getAttribute('aria-label')).toBe('Reply · the agent reads it')
   })
 
-  it('formats inline code and code blocks as they are typed', () => {
-    draw('a `b` c\n```\nx\n```')
-    expect(el.querySelector('.cm-md-code')?.textContent).toBe('`b`')
+  it('formats code, and hides its marks while the cursor is elsewhere', () => {
+    const view = draw('a `b` c\n```\nx\n```\nafter')
+    // The cursor is at the end: the backticks and the fences are out of sight.
+    expect(el.querySelector('.cm-md-code')?.textContent).toBe('b')
+    expect(el.querySelectorAll('.cm-md-fence')).toHaveLength(1)
+    expect(el.querySelector('.cm-content')?.textContent).not.toContain('```')
+    // Into the block: its fences come back, to be edited.
+    act(() => view.dispatch({ selection: { anchor: 'a `b` c\n```\n'.length } }))
     expect(el.querySelectorAll('.cm-md-fence')).toHaveLength(3)
+    // Next to the code: its backticks come back.
+    act(() => view.dispatch({ selection: { anchor: 5 } }))
+    expect(el.querySelector('.cm-md-code')?.textContent).toBe('`b`')
+    // The draft itself never changes.
+    expect(view.state.doc.toString()).toBe('a `b` c\n```\nx\n```\nafter')
+  })
+
+  it('keeps the fences of a block still being written', () => {
+    draw('x\n```\ncode')
+    expect(el.querySelector('.cm-content')?.textContent).toContain('```')
+  })
+
+  it('wraps the selection in bold, italics or code, and unwraps it again', () => {
+    const view = draw('make this bold')
+    const mod = /Mac/.test(navigator.platform) ? { metaKey: true } : { ctrlKey: true }
+    act(() => view.dispatch({ selection: { anchor: 10, head: 14 } }))
+    key(view, 'b', mod)
+    expect(view.state.doc.toString()).toBe('make this **bold**')
+    key(view, 'b', mod)
+    expect(view.state.doc.toString()).toBe('make this bold')
+    key(view, 'e', mod)
+    expect(view.state.doc.toString()).toBe('make this `bold`')
+  })
+
+  it('links the selected text when a link is pasted over it', () => {
+    const view = draw('see the PR')
+    act(() => view.dispatch({ selection: { anchor: 8, head: 10 } }))
+    const paste = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(paste, 'clipboardData', { value: { files: [], getData: () => 'https://example.com/1 ' } })
+    act(() => {
+      view.contentDOM.dispatchEvent(paste)
+    })
+    expect(view.state.doc.toString()).toBe('see the [PR](https://example.com/1)')
+  })
+
+  it('closes a code block when its third backtick is typed', () => {
+    const view = draw('look\n``')
+    const at = view.state.doc.length
+    const typed = view.state.facet(EditorView.inputHandler).some((h) => h(view, at, at, '`', () => view.state.update({})))
+    expect(typed).toBe(true)
+    expect(view.state.doc.toString()).toBe('look\n```\n```')
+    expect(view.state.selection.main.head).toBe(at + 1)
+    // Enter there is a newline inside the block, not a send.
+    key(view, 'Enter')
+    expect(view.state.doc.toString()).toBe('look\n```\n\n```')
   })
 })
