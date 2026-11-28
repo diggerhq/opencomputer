@@ -22,6 +22,7 @@ vi.mock('@opencomputer/sdk/computer', async (actual) => {
         ready: Promise.resolve(),
         status: { get: () => status, subscribe: () => () => {} },
         pending: () => signal([]),
+        attachments: () => signal([]),
         failures: { subscribe: () => () => {} },
         feed: () => ({
           subscribe: (cb: (f: FeedFrame) => void) => {

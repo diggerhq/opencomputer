@@ -1,6 +1,6 @@
 import type { GitHubAppPermission } from "../protocol.js";
 
-const GITHUB_API = "https://api.github.com";
+export const GITHUB_API = "https://api.github.com";
 const GITHUB_API_VERSION = "2026-03-10";
 const GITHUB_USER_AGENT = "opencomputer-managed-agents";
 const APP_JWT_BACKDATE_SECONDS = 60;
@@ -248,7 +248,8 @@ export async function exchangeGitHubUserCode(input: {
   return body.access_token;
 }
 
-function gitHubHeaders(authorization: string): Record<string, string> {
+/** The headers of a call to GitHub's API. */
+export function gitHubHeaders(authorization: string): Record<string, string> {
   return {
     authorization,
     accept: "application/vnd.github+json",

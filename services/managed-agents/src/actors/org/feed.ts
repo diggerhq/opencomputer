@@ -170,9 +170,7 @@ export function occurrences(sql: Sql, p: Principal, q: { after?: string; limit?:
 type MutateError = Extract<MutateReply, { error: unknown }>["error"];
 
 function apply(tx: Tx, p: Principal, m: MutateRequest): { protocol: 1; value?: unknown } | { error: MutateError } {
-  // `person` is the edge's, never the body's: a body's is replaced.
-  const args = typeof m.args === "object" && m.args !== null && !Array.isArray(m.args) ? { ...(m.args as Record<string, unknown>), person: m.person } : m.args;
-  const out = runMutation(tx, p, m.name, args);
+  const out = runMutation(tx, p, m.name, m.args, { person: m.person, merge: m.merge, revert: m.revert });
   if (out.ok) return { protocol: 1, ...(out.value !== undefined ? { value: out.value } : {}) };
   const { ok: _ok, ...error } = out;
   return { error: error as MutateError };
@@ -184,6 +182,13 @@ function idemKey(p: Principal, key: string): string | null {
   if (p.kind === "member") return `member:${p.subject}:${key}`;
   if (p.kind === "key") return `key:${p.credential.id}:${key}`;
   return null;
+}
+
+/** The reply a request with this `Idempotency-Key` and `hash` already got, if it got one: what `mutate` would answer without running anything. */
+export function replayOf(sql: Sql, p: Principal, key: string, hash: string): MutateReply | null {
+  const k = idemKey(p, key);
+  const stored = k === null ? null : idem.get(sql, k, hash);
+  return stored && "result" in stored ? (stored.result as MutateReply) : null;
 }
 
 /** `hash`: the request's (name and args). With an `Idempotency-Key`, a retry gets the first reply, `version` included. */

@@ -7,9 +7,15 @@ import type { Dead } from "../../durable/outbox.js";
 import type { Reply } from "../../durable/rpc-reply.js";
 import type { PublicComputerState } from "../computer/contract.js";
 import type { Summary } from "../session-log/contract.js";
+import type { Attachment, AttachmentMeta, AttachmentSpec } from "./attachments.js";
+
+export type { Attachment, AttachmentMeta, AttachmentSpec } from "./attachments.js";
+// The object store the API handler signs URLs of (work 126, section 5): Org's, so the route reaches it here.
+export { ATTACHMENT_BYTES_MAX } from "./limits.js";
+export { attachmentKey, attachmentsOf, type Attachments, type AttachmentsEnv } from "../../attachments/store.js";
 
 /** The mutation table: the API's `/work` routes match it (org/mutations/table.ts, which the SDK copies). */
-export { matchMutation } from "./mutations/table.js";
+export { EDGE_MUTATIONS, matchMutation } from "./mutations/table.js";
 
 /** The `session` feed row and the API's object (spec 35.1): today's `Session` and Org's fields. */
 export interface SessionRow extends Session {
@@ -26,7 +32,25 @@ export interface SessionRow extends Session {
 export type Row = { kind: string; id: string; version: number; audience?: string; [field: string]: unknown };
 export type PlaceRow = Row & { kind: "place"; trackId: string | null; position: number; parentSession: string | null; doneAt: string | null };
 /** `kind` is the table; the table's own `kind` column is sent as `type` (lane 4's log). */
-export type ResultRow = Row & { kind: "result"; sessionId: string; type: string; ref: string; title: string | null; state: string | null };
+/**
+ * What the platform holds of a result's pull request: GitHub's facts, and a merge or revert made from the surface (work 118).
+ * A key is absent until it is known. An agent writes `meta`, never this.
+ */
+export type PullRecord = {
+  /** The head commit, whether it is a draft, and the conclusion of the last check suite completed on that head. */
+  head?: string | null;
+  draft?: boolean | null;
+  checks?: string | null;
+  /** A merge or revert begun from the surface and not yet answered by GitHub. `at`: ms. */
+  merging?: { by: string; at: number; head: string };
+  reverting?: { by: string; at: number };
+  /** A merge made from the surface. `op`: its line's row. `method` null until the edge says which. */
+  merge?: { by: string; at: number; method: MergeMethod | null; base: string | null; sha: string | null; branchDeleted: boolean; op: string };
+  /** The revert of that merge: its pull request, merged or left open (`why`, in GitHub's words). */
+  revert?: { number: number; url: string; merged: boolean; by: string; at: number; why: string | null };
+};
+export type MergeMethod = "squash" | "merge" | "rebase";
+export type ResultRow = Row & { kind: "result"; sessionId: string; type: string; ref: string; title: string | null; state: string | null; pull: PullRecord | null };
 export type ReviewRow = { resultId: string; head: string; parts: unknown };
 export type DocRev = { trackId: string; rev: number; by: string; at: string; text: string };
 
@@ -67,6 +91,8 @@ export type CreateSession = CreateSessionBody & {
   turnId?: string;
   /** The request's trace, carried to the first turn; not part of the create's idempotency. */
   trace?: string;
+  /** With `input`: the first turn's attachments, reserved by the edge (`attachmentReserve`) before the create; what the turn carries. */
+  attachments?: AttachmentMeta[];
 };
 export interface SessionPatch {
   title?: string;
@@ -145,7 +171,16 @@ export type MutateRequest = {
   trace?: string;
   /** A member's or key's name and email, from the edge's credential, never a body's: `Session.owner` of a session the mutation makes (`track.create`'s agent). */
   person?: { name: string | null; email: string | null };
+  /** What GitHub did, as the edge saw it, never a body's: `result.merge` and `result.revert` record it (http/api/result-merge.ts). */
+  merge?: MergeFacts;
+  revert?: RevertFacts;
 };
+/** What the edge knows and a body cannot claim: a mutation's fourth argument. */
+export type EdgeFacts = Pick<MutateRequest, "person" | "merge" | "revert">;
+/** A merge GitHub made, of the commit `head`. `method` null: the pull request was found merged. */
+export type MergeFacts = { number: number; base: string; head: string; method: MergeMethod | null; sha: string | null; branchDeleted: boolean };
+/** A merge's revert: its pull request, and whether GitHub merged it (`why` not, in its words). */
+export type RevertFacts = { number: number; url: string; title: string; merged: boolean; why: string | null };
 export type MutateReply =
   /** `version`: the feed version that holds the effect; a client's feed that reached it shows it. */
   | { protocol: 1; version: number; value?: unknown }
@@ -166,7 +201,9 @@ export type MachinePub = {
   state: MachineState;
   previews: { sessionId: string; name: string; url: string }[];
 };
-export type PullPub = { url: string; state: "open" | "merged" | "closed"; checks: string | null; title: string; at: number };
+/** `head` and `draft`: null when GitHub's object lacked them (they stay as they were). */
+/** `checks`: a completed check suite's conclusion for `head`; null on a pull request event. `base`, `sha` (the merge commit): of a merged one. */
+export type PullPub = { url: string; state: "open" | "merged" | "closed"; checks: string | null; title: string; at: number; head?: string | null; draft?: boolean | null; base?: string | null; sha?: string | null };
 
 export interface OrgRpc {
   // the directory
@@ -189,6 +226,10 @@ export interface OrgRpc {
   thread(p: Principal, sessionId: string): Promise<{ rows: Row[] } | null>;
   search(p: Principal, q: { q: string; limit?: number }): Promise<{ rows: Row[] }>;
   result(p: Principal, id: string): Promise<ResultRow | null>;
+  /** Before the edge merges or reverts a result's pull request: whether `p` may, and the row. `replay`: the reply this request already got (its `Idempotency-Key`), to send again. */
+  mergeStart(p: Principal, id: string, m: Pick<MutateRequest, "name" | "args" | "idem">): Promise<Reply<{ result: ResultRow; replay: MutateReply | null }>>;
+  /** The merge (of `head`) or revert `p` is about to ask GitHub for, so the webhook of it is theirs and nobody else begins one; null: GitHub refused, it is off. */
+  mergeIntent(p: Principal, id: string, intent: { head: string } | "revert" | null): Promise<Reply<object>>;
   overview(p: Principal): Promise<Overview>;
   /** tell_track: the agent session of the caller's track. */
   trackAgent(p: Principal): Promise<string | null>;
@@ -218,6 +259,17 @@ export interface OrgRpc {
   linkPerson(from: string, to: string): Promise<void>;
   /** For an operator (Computer's operator status): the owed calls that ran out of tries. */
   dead(): Promise<Dead[]>;
+
+  // attachments (work 126, org/attachments.ts)
+  /** `PUT …/attachments/{id}`, before any byte is sent: the row, `uploading`. `created: false`: the same row again. */
+  attachmentCreate(p: Principal, sessionId: string, id: string, spec: AttachmentSpec): Promise<Reply<{ attachment: Attachment; created: boolean }>>;
+  /** `POST …/complete` saw the object in the store: the row is `ready`. */
+  attachmentReady(id: string, etag: string): Promise<Reply<{ attachment: Attachment }>>;
+  attachmentRead(p: Principal, sessionId: string, id: string): Promise<Reply<{ attachment: Attachment }>>;
+  attachmentList(p: Principal, sessionId: string): Promise<Reply<{ attachments: Attachment[] }>>;
+  attachmentDelete(p: Principal, sessionId: string, id: string): Promise<Reply<Record<never, never>>>;
+  /** Before `SessionLog.accept` of a turn naming attachments: all or none are `attached`; what the turn carries. */
+  attachmentReserve(p: Principal, sessionId: string, turnId: string, messageId: string | null, ids: string[]): Promise<Reply<{ attachments: AttachmentMeta[] }>>;
 }
 
 // ------------------------------------------------------------------ the knowledge repository (org/repository.ts)

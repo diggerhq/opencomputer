@@ -16,7 +16,12 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
 import { cn } from '@/lib/utils'
+import {
+  MarkdownLinkContext,
+  type MarkdownLink,
+} from '@/managed-agents/markdown-link'
 import { useConversation, useSurface } from '../hooks'
+import { ThreadGroup } from './ThreadRows'
 import {
   formatDuration,
   type Entry,
@@ -24,10 +29,12 @@ import {
   type Step,
 } from '../store/transcript'
 import { AskBlock } from './AskBlock'
+import { MessageAttachments, SessionScope } from './Attachments'
 import { I } from './icons'
 import { at, following, type Seen } from './follow'
 import { Mk } from './Mark'
 import { MEASURE } from './pane-classes'
+import { PullLink } from './PullLink'
 import { Rich } from './Rich'
 import { Tip } from './Tip'
 
@@ -405,7 +412,14 @@ function UserTurn({ item }: { item: Extract<Item, { kind: 'user' }> }) {
         </div>
       )}
       <div className={cn(pending && 'opacity-60')}>
-        <Rich text={item.text} size="reading" />
+        {item.text && <Rich text={item.text} size="reading" />}
+        {item.attachments && (
+          <MessageAttachments
+            attachments={item.attachments}
+            sending={item.state === 'sending'}
+            className={cn(item.text && 'mt-2')}
+          />
+        )}
       </div>
       {pending && <div className="text-faint text-meta mt-1">{pending}</div>}
       {item.state === 'failed' && (
@@ -579,6 +593,8 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
       return <SubagentView item={item} />
     case 'line':
       return <Line item={item} />
+    case 'threads':
+      return <ThreadGroup ids={item.ids} />
   }
 }, sameItem)
 
@@ -595,6 +611,11 @@ function DayLine({ at }: { at: string }) {
   )
 }
 
+// A link to one of the reader's pull requests is drawn as that result (work 118).
+const pullLink: MarkdownLink = (href, plain) => (
+  <PullLink href={href} plain={plain} />
+)
+
 export function Conversation(props: {
   sid: string
   trackId?: string
@@ -602,7 +623,13 @@ export function Conversation(props: {
   id?: string
 }) {
   // One list per conversation: its measured sizes are its own.
-  return <Transcript key={props.sid} {...props} />
+  return (
+    <SessionScope sid={props.sid}>
+      <MarkdownLinkContext.Provider value={pullLink}>
+        <Transcript key={props.sid} {...props} />
+      </MarkdownLinkContext.Provider>
+    </SessionScope>
+  )
 }
 
 function Transcript(props: {

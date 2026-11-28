@@ -114,7 +114,15 @@ function Shell({
   const desktop = surface.host.platform === 'desktop'
 
   const sideButton = (
-    <Tip label={listHidden ? 'Show list  [' : 'Hide list  ['} side="right">
+    <Tip
+      label={
+        <>
+          {listHidden ? 'Show list' : 'Hide list'}
+          <Kbd>[</Kbd>
+        </>
+      }
+      side="right"
+    >
       <Button
         variant="ghost"
         size="icon-sm"

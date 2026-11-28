@@ -1,5 +1,6 @@
 import { createStore, type StoreApi } from 'zustand/vanilla'
 import {
+  ATTACHMENTS_PER_MESSAGE,
   makeId,
   Refused,
   type Answer,
@@ -8,6 +9,7 @@ import {
   type MutationArgs,
   type MutationName,
   type Pending,
+  type PendingAttachment,
   type ResultRow,
   type Row,
   type SettingsPatch,
@@ -17,10 +19,10 @@ import { NOWHERE } from '../host'
 import { blockedIn } from './blocked'
 import { watchConversations } from './conversations'
 import { saveMerged } from './doc-save'
-import { OUT_OF_CREDITS, sayFailure, whatFailed } from './failure-text'
+import { OUT_OF_CREDITS, sayFailure, sayMergeFailure, whatFailed } from './failure-text'
+import { mergeable, pullNumber, revertOf, underWay } from './pulls'
 import { hurriedClient } from './hurried-client'
 import { overlay } from './overlay'
-import { safeNames, tar, uploadName } from './upload'
 import { pageWake } from './page-wake'
 import { serverReads } from './server-reads'
 import { readRow, applyFrame, Draft, emptyRows, type Rows } from './rows'
@@ -61,9 +63,12 @@ export function createSurface(o: SurfaceOptions) {
     base: emptyRows(),
     rows: emptyRows(),
     pending: [],
+    attachments: [],
+    canAttach: true,
     counts: NO_COUNTS,
     convos: {},
     toasts: [],
+    unmerged: {},
     palette: false,
     keysSheet: false,
     earlierNext: {},
@@ -76,6 +81,8 @@ export function createSurface(o: SurfaceOptions) {
     earlierOpen: false,
     trackEarlierOpen: {},
     drafts: {},
+    draftAttachments: {},
+    startSession: null,
     theme: 'system',
     reviewMode: 'summary',
     ...kept,
@@ -283,20 +290,6 @@ export function createSurface(o: SurfaceOptions) {
     sync()
   }
 
-  // Uploads the files, and returns the message with a line saying where they are.
-  const uploadOrSay = async (sid: string, input: string, files: File[]) => {
-    const name = uploadName(new Date())
-    try {
-      await client.upload(sid, name, tar(files))
-    } catch (e) {
-      const f = e instanceof Refused ? e : { code: 'internal', reason: '' }
-      toast({ text: `Could not upload ${files.length === 1 ? 'the file' : 'the files'}: ${sayFailure(f)}`, tone: 'error' })
-      throw e
-    }
-    const paths = safeNames(files.map((f) => f.name)).map((n) => `\`${name}/${n}\``)
-    return `${input || 'See the attached files.'}\n\nAttached, in the workspace: ${paths.join(', ')}`
-  }
-
   const onFailure = (f: Failure) => {
     answered.delete(f.entry.key)
     sync()
@@ -305,12 +298,25 @@ export function createSurface(o: SurfaceOptions) {
     // saveDoc merges and saves again.
     if (e.kind === 'mutation' && e.name === 'doc.save' && f.code === 'conflict') return
     const what = whatFailed(e)
+    if (e.kind === 'mutation' && (e.name === 'result.merge' || e.name === 'result.revert')) {
+      const why = sayMergeFailure(f)
+      const id = (e.args as { resultId: string }).resultId
+      if (e.name === 'result.merge') set({ unmerged: { ...get().unmerged, [id]: { why, head: get().base.result.get(id)?.pull?.head ?? null } } })
+      return toast({ text: `${what}: ${why}`, tone: 'error' })
+    }
     // What the person typed is not lost: it goes back in its box, unless
     // something new was typed there meanwhile.
     if (e.kind === 'turn' || e.kind === 'session') {
       const input = e.kind === 'turn' ? e.input : e.body.input
       const key = e.kind === 'session' ? 'new' : draftKeyOf(e.sessionId)
       if (input && !get().drafts[key]) actions.setDraft(key, input)
+      // Its files too (work 126): the client still holds them, and one that
+      // failed (the server refused the message for it) shows why, to be taken out.
+      const ids = e.kind === 'turn' ? e.attachments : e.body.attachments
+      if (ids?.length && !get().draftAttachments[key]?.length) {
+        setDraftAttachments(key, ids)
+        if (e.kind === 'session' && !get().startSession) set({ startSession: e.sessionId })
+      }
     }
     const billing = host.billing
     toast({
@@ -324,6 +330,47 @@ export function createSurface(o: SurfaceOptions) {
     for (const k of get().rows.track.values()) if (k.agentSession === sid) return `k:${k.id}`
     return `t:${sid}`
   }
+  const setDraftAttachments = (key: string, ids: string[]) => {
+    const draftAttachments = { ...get().draftAttachments }
+    if (ids.length) draftAttachments[key] = ids
+    else delete draftAttachments[key]
+    set({ draftAttachments })
+  }
+  // The session a composer's files are uploaded to (work 126, D8): the start
+  // box's is made at its first file, and is the one `start` then creates.
+  const sessionOf = (key: string): string | null => {
+    if (key === 'new') {
+      const id = get().startSession ?? makeId('cs')
+      if (id !== get().startSession) set({ startSession: id })
+      return id
+    }
+    if (key.startsWith('t:')) return key.slice(2)
+    return get().rows.track.get(key.slice(2))?.agentSession ?? null
+  }
+  // The bytes of the files attached in this page, for their thumbnails: in
+  // memory only, and dropped with the client's record.
+  const blobs = new Map<string, Blob>()
+  const onAttachments = (attachments: PendingAttachment[]) => {
+    for (const id of [...blobs.keys()]) if (!attachments.some((a) => a.id === id)) blobs.delete(id)
+    set({ attachments })
+  }
+  // What was kept names files by id: one the client does not hold (sent or
+  // removed in another tab, or dropped for its age) leaves no chip behind.
+  const dropUnknown = (attachments: PendingAttachment[]) => {
+    const held = new Set(attachments.map((a) => a.id))
+    const draftAttachments: Record<string, string[]> = {}
+    for (const [key, ids] of Object.entries(get().draftAttachments)) {
+      const known = ids.filter((id) => held.has(id))
+      if (known.length) draftAttachments[key] = known
+    }
+    set({ draftAttachments, ...(draftAttachments.new ? {} : { startSession: null }) })
+  }
+  // The ids a composer sends: the ones the client still holds, in order.
+  const attachmentsOf = (key: string): string[] | undefined => {
+    const held = new Set(get().attachments.map((a) => a.id))
+    const ids = (get().draftAttachments[key] ?? []).filter((id) => held.has(id))
+    return ids.length ? ids : undefined
+  }
 
   // ---- conversations ----
 
@@ -334,6 +381,7 @@ export function createSurface(o: SurfaceOptions) {
   void client.ready.then(() => {
     stops.push(client.feed(['session', 'place', 'track', 'result', 'proposal', 'doc', 'read', 'pref', 'machine', 'op']).subscribe(onFrame))
     stops.push(client.pending().subscribe((pending) => recompose({ pending })))
+    stops.push(client.attachments().subscribe(onAttachments))
     stops.push(client.failures.subscribe(onFailure))
     stops.push((o.wake ?? pageWake)(hurry))
     stops.push(
@@ -342,7 +390,8 @@ export function createSurface(o: SurfaceOptions) {
         if (status === 'online') set({ synced: true })
       }),
     )
-    set({ ready: true, status: client.status.get(), pending: client.pending().get() })
+    dropUnknown(client.attachments().get())
+    set({ ready: true, status: client.status.get(), pending: client.pending().get(), attachments: client.attachments().get() })
     recompose()
   })
   stops.push(
@@ -436,36 +485,59 @@ export function createSurface(o: SurfaceOptions) {
     },
 
     // -- talking --
-    // A1, A22: the agent decides what this becomes; `open` lands on it.
+    // A1, A22: the agent decides what this becomes; `open` lands on it. The
+    // start box's files were uploaded to `startSession` (D8): that is the id.
     start(input: string, opt: { open: boolean; settings?: SettingsPatch }) {
-      const r = client.createSession({ input, role: 'start', ...opt.settings })
+      const attachments = attachmentsOf('new')
+      const id = attachments ? (get().startSession ?? undefined) : undefined
+      const r = client.createSession({ id, input, role: 'start', ...opt.settings, attachments })
+      setDraftAttachments('new', [])
+      set({ startSession: null })
       settle(r)
       if (opt.open) go({ ...NOWHERE, thread: r.id })
       return r.id
     },
     // A2, A3: a reply to a working agent steers it, read at its next step;
     // `now` stops what it is doing so it reads this at once (work 134).
-    send(sid: string, input: string, opt?: { now?: boolean }) {
+    // `draftKey`: the composer whose files go with it (work 126); the
+    // message waits for their uploads.
+    send(sid: string, input: string, opt?: { now?: boolean; draftKey?: string }) {
       const st = get().rows.session.get(sid)?.status
       const busy = st === 'running' || st === 'starting'
-      settle(client.send(sid, input, { ifBusy: busy ? (opt?.now ? 'interrupt' : 'steer') : undefined }))
+      const attachments = opt?.draftKey ? attachmentsOf(opt.draftKey) : undefined
+      if (opt?.draftKey) setDraftAttachments(opt.draftKey, [])
+      settle(client.send(sid, input, { ifBusy: busy ? (opt?.now ? 'interrupt' : 'steer') : undefined, attachments }))
     },
-    // Files attached in a composer go first, to the session's workspace
-    // (upload.ts), then the message, which names where they are. A start
-    // makes the session without a message, so there is somewhere to put them.
-    // On a refused upload it toasts and throws, so the composer keeps them.
-    async startWithFiles(input: string, files: File[], opt: { open: boolean; settings?: SettingsPatch }) {
-      const r = client.createSession({ role: 'start', ...opt.settings })
-      settle(r)
-      await r.settled
-      const said = await uploadOrSay(r.id, input, files)
-      settle(client.send(r.id, said, { ifBusy: 'queue' }))
-      if (opt.open) go({ ...NOWHERE, thread: r.id })
-      return r.id
+    // Files for a composer's next message (work 126): uploaded at once by the
+    // client, ahead of the message. The limits are the server's: a file it
+    // refuses shows as a failed chip with its reason.
+    attach(draftKey: string, files: Iterable<Blob>) {
+      if (!get().canAttach) return
+      const sid = sessionOf(draftKey)
+      if (!sid) return
+      const ids = [...(get().draftAttachments[draftKey] ?? [])]
+      for (const file of files) {
+        if (ids.length >= ATTACHMENTS_PER_MESSAGE) {
+          toast({ text: `A message can carry at most ${ATTACHMENTS_PER_MESSAGE} files`, tone: 'error' })
+          break
+        }
+        try {
+          const { id } = client.attach(sid, file)
+          blobs.set(id, file)
+          ids.push(id)
+        } catch (e) {
+          const name = (file as File).name || 'A file'
+          toast({ text: `${name} was not attached: ${e instanceof Refused ? sayFailure(e) : 'something went wrong'}`, tone: 'error' })
+        }
+      }
+      setDraftAttachments(draftKey, ids)
     },
-    async sendWithFiles(sid: string, input: string, files: File[]) {
-      actions.send(sid, await uploadOrSay(sid, input, files))
+    removeAttachment(draftKey: string, id: string) {
+      setDraftAttachments(draftKey, (get().draftAttachments[draftKey] ?? []).filter((x) => x !== id))
+      void client.removeAttachment(id)
     },
+    // The bytes of a file attached in this page; none after a reload.
+    attachmentBlob: (id: string): Blob | undefined => blobs.get(id),
     answer(sid: string, askId: string, answer: Answer) {
       settle(client.answer(sid, askId, answer))
     },
@@ -588,8 +660,45 @@ export function createSurface(o: SurfaceOptions) {
     dismissProposal(proposalId: string) {
       mutate('proposal.dismiss', { proposalId })
     },
+    // A merge is undone on GitHub: its revert.
     undo(opId: string) {
+      const op = get().rows.op.get(opId)
+      if (op?.name === 'result.merge') return actions.revert((op.args as { resultId: string }).resultId)
       mutate('undo', { opId })
+    },
+    // Work 118: one click merges the pull request as the person saw it. Nothing is asked first; Undo reverts it.
+    merge(resultId: string) {
+      const r = get().rows.result.get(resultId)
+      if (!r || !mergeable(r)) return
+      const unmerged = { ...get().unmerged }
+      delete unmerged[resultId]
+      set({ unmerged })
+      // `head`: what they saw; `at`: when they clicked, so one queued offline does not land much later.
+      const head = r.pull?.head
+      const sent = mutate('result.merge', { resultId, ...(head ? { head } : {}), at: Date.now() })
+      const n = pullNumber(r) ?? ''
+      sent.settled.then(
+        () => {
+          // Theirs offers Undo. One found already merged (on GitHub, or by someone else) is not theirs to undo.
+          const mine = get().rows.result.get(resultId)?.pull?.merge?.by === `user:${me}`
+          toast(mine ? { text: `Merged #${n}`, undo: () => actions.revert(resultId) } : { text: `#${n} was already merged` })
+        },
+        () => {},
+      )
+    },
+    revert(resultId: string) {
+      const r = get().rows.result.get(resultId)
+      if (!r || r.state !== 'merged' || underWay(r)) return
+      mutate('result.revert', { resultId }).settled.then(
+        () => {
+          const now = get().rows.result.get(resultId)
+          const revert = now ? revertOf(now) : null
+          if (!revert) return
+          if (revert.merged) toast({ text: `Reverted with #${revert.number}` })
+          else toast({ text: `Not reverted: #${revert.number} is open on GitHub${revert.why ? ` (${revert.why.replace(/\.$/, '')})` : ''}`, tone: 'error' })
+        },
+        () => {},
+      )
     },
     // Z: the last thing that offered an Undo.
     undoLast() {

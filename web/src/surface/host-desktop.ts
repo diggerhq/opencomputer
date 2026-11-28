@@ -1,6 +1,7 @@
 import type { Channel, ClientFrame, Principal, ServerFrame } from '@opencomputer/sdk/computer'
 import type { Host, Location } from './host'
 import { NOWHERE } from './host'
+import { xhrUpload } from './host-web'
 
 // The Mac app's host, over the preload bridge of spec 42.3. The page sees a
 // channel and never a socket or a token; API requests go to `/api/…` on the
@@ -63,6 +64,8 @@ export function desktopHost(oc: Bridge): Host {
         headers.set('x-oc-app', '1')
         return fetch(`/api${path}`, { ...init, headers })
       },
+      // Straight to the signed URL: the shell's `/api` relays JSON only.
+      uploadTo: (url, req) => xhrUpload(url, req, { credentials: false }),
     },
     // One relay for the app: each "connection" is a view of it.
     connect(): Channel {

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { CircleAlert, CircleCheck } from 'lucide-react'
+import { CircleAlert, CircleCheck, Tag } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import { useTransientFlag } from '@/lib/use-transient-flag'
 import {
@@ -16,6 +16,7 @@ import {
   redeemPromoCode,
   setAutumnAutoTopup,
   type AutumnBilling,
+  type BillingPromo,
   type CheckoutFrom,
   type AgentSessionUsageRow,
   type StripeInvoice,
@@ -47,7 +48,6 @@ import {
   formatMinutes,
   formatUsd,
   planChangeTiming,
-  planPriceLabel,
   trackPlanActivated,
   trackUpsellShown,
   withSavedOption,
@@ -56,6 +56,15 @@ import {
   type UsagePlanId,
 } from '@/lib/billing-onramp'
 import { useBillingActions } from '@/hooks/useBillingActions'
+import { useBillingPromo } from '@/hooks/useBillingPromo'
+import {
+  activeClaim,
+  countdownText,
+  promoMonths,
+  promoTermText,
+  promoUnavailableText,
+  type PlanPricing,
+} from '@/lib/promo'
 import { HaltNoticeBody } from '@/components/billing-surfaces'
 
 type Tab = 'usage' | 'invoices'
@@ -250,12 +259,11 @@ function PlanTab() {
 
 // The plan picker of serverless-agents-ws 086: the trial, Pro ($20/mo, 2,000
 // work minutes) and Max ($200/mo, 25,000). Upgrades apply now; Max → Pro and
-// cancelling take effect at the end of the paid period.
-const PLAN_DESCRIPTIONS: Record<UsagePlanId, string> = {
+// cancelling take effect at the end of the paid period. Paid plans describe
+// their minutes from the org's pricing, which a deal can change.
+const FREE_PLAN_DESCRIPTIONS: Record<'trial' | 'base', string> = {
   trial: `${formatMinutes(TRIAL_MINUTES)} of work and $${TRIAL_CREDITS_USD} of model credits for ${TRIAL_DAYS} days. No card needed.`,
   base: 'Free credits to get started.',
-  pro: `${formatMinutes(PLAN_OFFERS.pro.minutes)} of work a month.`,
-  max: `${formatMinutes(PLAN_OFFERS.max.minutes)} of work a month.`,
 }
 
 function formatDate(value: string) {
@@ -291,9 +299,11 @@ function PrepaidPlan() {
     refetchInterval: pendingUsagePlan != null ? 1_500 : 30_000,
   })
   const currentPlan: UsagePlanId = autumn?.usagePlan ?? 'trial'
-  // `?plan=` (upsell or site deep link) opens that plan's upgrade confirmation.
+  const promoState = useBillingPromo()
+  // `?plan=` (upsell or site deep link) opens that plan's upgrade confirmation,
+  // once any deal is known so the price it quotes doesn't change under the user.
   const deepLinkedPlan =
-    billingOnrampV2Enabled && autumn
+    billingOnrampV2Enabled && autumn && promoState.settled
       ? deepLinkedPlanFor(searchParams.get('plan'), autumn.usagePlan)
       : null
   const [dialog, setDialog] = useState<PlanDialog | null>(null)
@@ -388,6 +398,7 @@ function PrepaidPlan() {
   const periodEnd = autumn?.periodEndsAt
     ? formatDate(autumn.periodEndsAt)
     : 'the end of the period'
+  const dialogPricing = dialogPlan ? promoState.pricing(dialogPlan) : null
 
   return (
     <div className="max-w-5xl space-y-4">
@@ -423,6 +434,12 @@ function PrepaidPlan() {
         </Panel>
       ) : null}
 
+      <PromoPanel
+        promo={promoState.promo}
+        applies={promoState.applies}
+        linked={searchParams.has('promo')}
+      />
+
       {autumn ? <UsageSummary autumn={autumn} /> : null}
 
       <PlanPicker
@@ -430,6 +447,7 @@ function PrepaidPlan() {
         trialEndsAt={autumn?.trialEndsAt ?? null}
         periodEndsAt={autumn?.periodEndsAt ?? null}
         scheduled={scheduled}
+        pricing={promoState.pricing}
         busy={actions.pending || cancelMutation.isPending}
         onSwitch={(plan) => setDialog({ kind: 'switch', plan })}
         onCancel={(plan) => setDialog({ kind: 'cancel', plan })}
@@ -477,17 +495,19 @@ function PrepaidPlan() {
             : `Upgrade to ${dialogPlan ? PLAN_NAMES[dialogPlan] : ''}`
         }
         description={
-          dialogPlan
+          dialogPlan && dialogPricing
             ? dialogTiming === 'period_end'
               ? `You keep Max until ${periodEnd}. Then Pro starts at $${PLAN_OFFERS.pro.priceUsd}/month with ${formatMinutes(PLAN_OFFERS.pro.minutes)} a month.`
-              : `${planPriceLabel(dialogPlan)} starts now with ${formatMinutes(PLAN_OFFERS[dialogPlan].minutes)} a month. Stripe prorates any change from your current plan.`
+              : dialogPricing.normalPriceUsd != null && promoState.promo
+                ? `${PLAN_NAMES[dialogPlan]} starts now at the Black Friday price: $${dialogPricing.priceUsd}/mo (normally $${dialogPricing.normalPriceUsd}) with ${formatMinutes(dialogPricing.minutes)} a month, locked for ${promoMonths(promoState.promo)} months. Then it returns to the normal price and minutes.`
+                : `${PLAN_NAMES[dialogPlan]} ($${dialogPricing.priceUsd}/mo) starts now with ${formatMinutes(dialogPricing.minutes)} a month. Stripe prorates any change from your current plan.`
             : ''
         }
         confirmLabel={
-          dialogPlan
+          dialogPlan && dialogPricing
             ? dialogTiming === 'period_end'
               ? `Switch on ${periodEnd}`
-              : `${PLAN_NAMES[dialogPlan]} — $${PLAN_OFFERS[dialogPlan].priceUsd}/mo`
+              : `${PLAN_NAMES[dialogPlan]} — $${dialogPricing.priceUsd}/mo`
             : 'Continue'
         }
         pending={actions.subscribe.isPending}
@@ -597,6 +617,7 @@ function PlanPicker({
   trialEndsAt,
   periodEndsAt,
   scheduled,
+  pricing,
   busy,
   onSwitch,
   onCancel,
@@ -606,6 +627,7 @@ function PlanPicker({
   trialEndsAt: string | null
   periodEndsAt: string | null
   scheduled: AutumnBilling['scheduledChange'] | null
+  pricing: (plan: PaidPlanId) => PlanPricing
   busy: boolean
   onSwitch: (plan: PaidPlanId) => void
   onCancel: (plan: PaidPlanId) => void
@@ -638,6 +660,7 @@ function PlanPicker({
           const paid = plan === 'pro' || plan === 'max' ? plan : null
           const startsLater = scheduled?.to === 'pro' && plan === 'pro'
           const cancelling = current && scheduled?.to === 'cancel'
+          const price = paid ? pricing(paid) : null
           let note: string | null = null
           if (current && plan === 'trial' && trialEndsAt)
             note = `Ends ${formatDate(trialEndsAt)}`
@@ -659,7 +682,12 @@ function PlanPicker({
                 <div>
                   <div className="font-medium">{PLAN_NAMES[plan]}</div>
                   <div className="mt-1 font-mono text-xl font-semibold">
-                    {paid ? `$${PLAN_OFFERS[paid].priceUsd}` : '$0'}
+                    {price?.normalPriceUsd != null ? (
+                      <s className="text-muted-foreground mr-1.5 text-sm font-normal">
+                        ${price.normalPriceUsd}
+                      </s>
+                    ) : null}
+                    {price ? `$${price.priceUsd}` : '$0'}
                     <span className="text-muted-foreground text-xs font-normal">
                       {paid ? '/mo' : ` for ${TRIAL_DAYS} days`}
                     </span>
@@ -669,10 +697,28 @@ function PlanPicker({
                   <StatusBadge status="active" label="Current" />
                 ) : startsLater ? (
                   <StatusBadge status="pending" label="Scheduled" />
+                ) : price?.normalPriceUsd != null ? (
+                  <DealBadge />
                 ) : null}
               </div>
               <p className="text-muted-foreground mt-3 min-h-10 text-sm">
-                {PLAN_DESCRIPTIONS[plan]}
+                {price ? (
+                  <>
+                    {price.normalMinutes != null ? (
+                      <>
+                        <s>{formatMinutes(price.normalMinutes)}</s>{' '}
+                        <span className="text-foreground font-medium">
+                          {formatMinutes(price.minutes)}
+                        </span>
+                      </>
+                    ) : (
+                      formatMinutes(price.minutes)
+                    )}{' '}
+                    of work a month.
+                  </>
+                ) : plan === 'trial' || plan === 'base' ? (
+                  FREE_PLAN_DESCRIPTIONS[plan]
+                ) : null}
               </p>
               {note ? (
                 <p
@@ -735,6 +781,110 @@ function PlanPicker({
         })}
       </div>
     </Panel>
+  )
+}
+
+function DealBadge() {
+  return (
+    <span className="bg-primary text-primary-foreground inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium">
+      <Tag className="size-3" aria-hidden />
+      50% off
+    </span>
+  )
+}
+
+// The Black Friday deal above the plans: the offer with its countdown and
+// price lock while this org can claim it, the claim once it has, or why a
+// `?promo=` link doesn't apply. Nothing when the deal is unknown (the endpoint
+// failed or 404s), so the page shows normal pricing.
+function PromoPanel({
+  promo,
+  applies,
+  linked,
+}: {
+  promo: BillingPromo | undefined
+  applies: boolean
+  linked: boolean
+}) {
+  if (!promo) return null
+  if (promo.claim) {
+    const claim = activeClaim(promo)
+    if (!claim) return null
+    const deal = promo.plans[claim.plan]
+    return (
+      <Panel className="p-4">
+        <div className="flex items-start gap-3">
+          <Tag className="text-status-running mt-0.5 size-5 shrink-0" />
+          <div>
+            <h2 className="text-sm font-semibold">Black Friday deal claimed</h2>
+            <p className="text-muted-foreground mt-1 text-sm">
+              {PLAN_NAMES[claim.plan]} at ${deal.price}/mo with{' '}
+              {formatMinutes(deal.minutes)} a month, locked for {claim.months}{' '}
+              months until {formatDate(claim.endsAt)}. After that it returns to
+              ${deal.normalPrice}/mo with {formatMinutes(deal.normalMinutes)} a
+              month at the end of the billing cycle.
+            </p>
+          </div>
+        </div>
+      </Panel>
+    )
+  }
+  if (applies) {
+    return (
+      <Panel className="border-primary/40 p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="max-w-xl min-w-0">
+            <div className="flex items-center gap-2">
+              <DealBadge />
+              <span className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
+                Black Friday
+              </span>
+            </div>
+            <h2 className="mt-2 text-base font-semibold">
+              Pro and Max at half price with double the minutes.
+            </h2>
+            <p className="text-muted-foreground mt-1 text-sm">
+              Pro ${promo.plans.pro.price}/mo with{' '}
+              {formatMinutes(promo.plans.pro.minutes)}, Max $
+              {promo.plans.max.price}/mo with{' '}
+              {formatMinutes(promo.plans.max.minutes)} a month.{' '}
+              {promoTermText(promo)}
+            </p>
+          </div>
+          <div className="sm:text-right">
+            <div className="text-muted-foreground text-xs">Ends in</div>
+            <PromoCountdown endsAt={promo.endsAt} />
+            <div className="text-muted-foreground mt-1 font-mono text-[11px]">
+              {promo.earlyLeft > 0 ? '12-month' : '3-month'} price lock
+            </div>
+          </div>
+        </div>
+      </Panel>
+    )
+  }
+  const unavailable = linked ? promoUnavailableText(promo) : null
+  if (!unavailable) return null
+  return (
+    <Panel className="p-4">
+      <p className="text-muted-foreground flex items-center gap-2 text-sm">
+        <CircleAlert className="size-4 shrink-0" />
+        {unavailable}
+      </p>
+    </Panel>
+  )
+}
+
+// Ticks on its own so the rest of the page doesn't re-render every second.
+function PromoCountdown({ endsAt }: { endsAt: string }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1_000)
+    return () => clearInterval(timer)
+  }, [])
+  return (
+    <div className="font-mono text-xl font-semibold tabular-nums">
+      {countdownText(endsAt, now) ?? 'Ended'}
+    </div>
   )
 }
 

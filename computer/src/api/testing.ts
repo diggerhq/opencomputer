@@ -42,7 +42,7 @@ export function assertEvent(e: JournalEvent): void {
 /** A turn's worth of events: received, started, a text block, completed. */
 export function turn(log: SessionLog, input = 'hi', text = 'ok'): string {
   const t = mintId('tn');
-  log.append('message.received', { input, ifBusy: 'queue', delivery: 'started', interruptedTurnIds: [], declinedAskIds: [] }, { turnId: t, actor: ANN });
+  log.append('message.received', { input, ifBusy: 'queue', delivery: 'started', interruptedTurnIds: [], declinedAskIds: [], attachments: [] }, { turnId: t, actor: ANN });
   log.append('turn.started', { model: null, effort: null, mode: null, trigger: 'message', subagentId: null }, { turnId: t, actor: ANN });
   log.append('message.completed', { blockId: `b-${t}`, parentCallId: null, text }, { turnId: t, actor: ANN });
   log.append('turn.completed', { text, durationMs: 1, silent: false }, { turnId: t, actor: ANN });

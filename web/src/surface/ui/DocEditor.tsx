@@ -37,7 +37,7 @@ export function DocEditor(props: {
 }) {
   return (
     <CodeMirror
-      className="bg-card focus-within:border-ring focus-within:ring-ring/50 min-h-0 w-full max-w-180 flex-1 overflow-hidden rounded-md border shadow-xs transition-[color,box-shadow] focus-within:ring-[3px]"
+      className="bg-card focus-within:border-ring/60 min-h-0 w-full max-w-180 flex-1 overflow-hidden rounded-md border shadow-xs transition-[color,box-shadow]"
       height="100%"
       theme={theme}
       // The editor opens on the person's own Edit, so it takes the focus.

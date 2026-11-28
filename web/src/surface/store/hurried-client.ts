@@ -12,6 +12,7 @@ export function hurriedClient(host: Host, storage: Storage): { client: Client; h
     fetch: (path, init) => host.api.fetch(path, init),
     connect: () => host.connect(),
     storage,
+    uploadTo: host.api.uploadTo ? (url, req) => host.api.uploadTo!(url, req) : undefined,
     lock:
       typeof navigator !== 'undefined' && navigator.locks
         ? (name, fn) => navigator.locks.request(name, fn)

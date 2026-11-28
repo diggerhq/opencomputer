@@ -116,6 +116,14 @@ export function fmtTokens(n: number) {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
+/** A size for a person or the model: `812 B`, `3.4 KB`, `45 MB`, `1.2 GB` (1024s). */
+export function fmtBytes(n: number) {
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  for (; n >= 1024 && i < units.length - 1; i++) n /= 1024;
+  return `${i === 0 || n >= 100 ? Math.round(n) : n.toFixed(1)} ${units[i]}`;
+}
+
 export function fmtDuration(ms: number) {
   const s = Math.round(ms / 1000);
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`;

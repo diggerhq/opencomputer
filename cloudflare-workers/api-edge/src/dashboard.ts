@@ -25,6 +25,8 @@ import {
   autumnCancelPlan,
 } from "./autumn_webhook";
 import { planSchedule, summarizeWorkMinutePlan, trialEndsAt } from "./billing_summary";
+import { dashboardPromo, promoCheckout, type PromoCheckout } from "./promo";
+import { BFCM_2026 } from "./promo_claims";
 import { emitBillingEvent, type BillingEventsEnv } from "./billing_events";
 import { KEY_SCOPES, createAPIKeyWithHash } from "./api_keys";
 import { createdKeyForSync, revokeComputerKey, syncComputerKey } from "./computer_keys";
@@ -852,6 +854,9 @@ export async function handleDashboard(
   if (sub === "/billing/autumn/plan" && method === "POST") {
     return handleAutumnUsagePlan(req, env, caller);
   }
+  if (sub === "/billing/promo" && method === "GET") {
+    return handleBillingPromo(env, caller);
+  }
   if (sub === "/billing/autumn/concurrency" && method === "POST") {
     return handleAutumnConcurrency(req, env, caller);
   }
@@ -1123,12 +1128,25 @@ async function billingWarning(env: DashboardEnv, orgID: string): Promise<string 
 // Where a checkout was opened from (086 funnel); anything else is the Billing page.
 const CHECKOUT_FROM = new Set(["paywall", "warning", "billing_page", "signup"]);
 
-// POST /api/dashboard/billing/autumn/plan { plan, from? } — subscribe to or switch
-// between the recurring Pro and Max shared-credit plans. Usage remains the
-// automatic fallback when a paid subscription is cancelled in Stripe.
+// GET /api/dashboard/billing/promo — the current promotion (promo.ts), whether
+// this org may claim it, and its claim once active.
+async function handleBillingPromo(env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+  try {
+    return json(await dashboardPromo(env.OPENCOMPUTER_DB, caller.orgID, BFCM_2026));
+  } catch (e) {
+    console.error("billing/promo:", e);
+    return json({ error: "promo unavailable" }, 503);
+  }
+}
+
+// POST /api/dashboard/billing/autumn/plan { plan, from?, promo? } — subscribe to
+// or switch between the recurring Pro and Max shared-credit plans. Usage remains
+// the automatic fallback when a paid subscription is cancelled in Stripe. With
+// `promo`, an eligible org reserves its claim and attaches at the promo's price
+// and minutes (promo.ts).
 async function handleAutumnUsagePlan(req: Request, env: DashboardEnv, caller: { orgID: string; userID?: string }): Promise<Response> {
   if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
-  let body: { plan?: string; from?: string };
+  let body: { plan?: string; from?: string; promo?: string | null };
   try {
     body = await req.json();
   } catch {
@@ -1138,21 +1156,35 @@ async function handleAutumnUsagePlan(req: Request, env: DashboardEnv, caller: { 
   if (plan !== "pro" && plan !== "max") {
     return json({ error: `unknown usage plan '${plan}'` }, 400);
   }
+  if (body.promo != null && typeof body.promo !== "string") {
+    return json({ error: "promo must be a string" }, 400);
+  }
   const origin = new URL(req.url).origin;
   try {
+    let promo: Extract<PromoCheckout, { ok: true }> | null = null;
+    if (body.promo) {
+      const admitted = await promoCheckout(env, caller.orgID, body.promo, plan);
+      if (!admitted.ok) return json({ error: admitted.error }, admitted.status);
+      promo = admitted;
+    }
     const current = await env.OPENCOMPUTER_DB.prepare("SELECT usage_plan FROM orgs WHERE id = ?1")
       .bind(caller.orgID)
       .first<{ usage_plan: string | null }>();
     const co = await autumnUsagePlanPurchase(env, {
       customerId: caller.orgID,
       planId: plan,
-      successUrl: `${origin}/billing?usage-plan=${plan}`,
+      successUrl: `${origin}/billing?usage-plan=${plan}${promo ? `&promo=${promo.offer.id}` : ""}`,
       planSchedule: planSchedule(current?.usage_plan === "max" ? "max" : "base", plan),
+      ...(promo ? { customize: promo.customize, customer: promo.customer } : {}),
     });
     await emitBillingEvent(env, "billing.checkout_opened", {
       orgId: caller.orgID,
       userId: caller.userID,
-      data: { plan, from: CHECKOUT_FROM.has(body.from ?? "") ? body.from! : "billing_page" },
+      data: {
+        plan,
+        from: CHECKOUT_FROM.has(body.from ?? "") ? body.from! : "billing_page",
+        ...(promo ? { promo: promo.offer.id } : {}),
+      },
     });
     return json({ url: co.url });
   } catch (e) {

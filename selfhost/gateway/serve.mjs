@@ -18,10 +18,12 @@
 // web/dist), COMPUTER_ANTHROPIC_API_KEY
 // (optional, the sessions' shared model key), PUBLIC_URL (or SP_ORIGIN; the public https origin),
 // SP_SETUP_OPEN (1: /setup stays open once complete), GATEWAY_PORT (the host-side port the host
-// agent dials, for /setup's install command; default PORT).
+// agent dials, for /setup's install command; default PORT), ATTACHMENTS_S3_ENDPOINT, ATTACHMENTS_S3_BUCKET,
+// ATTACHMENTS_S3_ACCESS_KEY_ID, ATTACHMENTS_S3_SECRET_ACCESS_KEY, ATTACHMENTS_S3_REGION (optional: an
+// S3-compatible store for attachments; unset, they are kept in GATEWAY_DATA/r2 and served by the gateway).
 //
-// Keys the gateway needs and nobody types (the host token key, the store key, the secrets api-edge
-// and managed-agents share) are generated on
+// Keys the gateway needs and nobody types (the host token key, the store key, the key that signs
+// attachment URLs, the secrets api-edge and managed-agents share) are generated on
 // first start into GATEWAY_DATA/keys.json (0600). The organization's host token is written to
 // GATEWAY_DATA/host-token (0600) for the host agent's SP_HOST_TOKEN; it is never printed.
 
@@ -63,6 +65,13 @@ const hostTokenKey = keep("COMPUTER_HOST_TOKEN_KEY", () => randomBytes(32).toStr
 const channelKey = keep("BLUE_CHANNEL_ENCRYPTION_KEY", () => randomBytes(32).toString("base64"));
 const usageSecret = keep("BLUE_USAGE_HMAC_SECRET", () => randomBytes(32).toString("hex"));
 const wireTicketKey = keep("WIRE_TICKET_KEY", () => randomBytes(32).toString("hex"));
+// Signs the URLs an attachment is uploaded to and read from (managed-agents' attachment-objects.ts).
+const attachmentsUrlKey = keep("ATTACHMENTS_URL_KEY", () => randomBytes(32).toString("hex"));
+// An operator's own S3-compatible store for attachments, used instead of the bucket when all four are set.
+const attachmentsS3 = Object.fromEntries(
+  ["ATTACHMENTS_S3_ENDPOINT", "ATTACHMENTS_S3_BUCKET", "ATTACHMENTS_S3_ACCESS_KEY_ID", "ATTACHMENTS_S3_SECRET_ACCESS_KEY", "ATTACHMENTS_S3_REGION"]
+    .filter((k) => process.env[k]).map((k) => [k, process.env[k]]),
+);
 // api-edge's, as api-edge/scripts/stack.mjs generates them for a preview stack.
 const hex = () => randomBytes(32).toString("hex");
 const edgeSecrets = Object.fromEntries(
@@ -208,6 +217,8 @@ const mf = new Miniflare({
       BLUE_CHANNEL_ENCRYPTION_KEY: channelKey,
       BLUE_USAGE_HMAC_SECRET: usageSecret,
       WIRE_TICKET_KEY: wireTicketKey,
+      ATTACHMENTS_URL_KEY: attachmentsUrlKey,
+      ...attachmentsS3,
       // api-edge's assertion (x-opencomputer-agent-token) and credential handoff.
       OC_MANAGED_AGENTS_SECRET: edgeSecrets.OC_MANAGED_AGENTS_SECRET,
       OC_MANAGED_CRED_HMAC_SECRET: edgeSecrets.OC_MANAGED_CRED_HMAC_SECRET,
@@ -224,7 +235,7 @@ const mf = new Miniflare({
       ACCOUNTS: sqlite("SelfhostAccountDurableObject"),
     },
     d1Databases: { SERVERLESS_AGENTS_DB: "selfhost" },
-    r2Buckets: { SESSION_LOG_BLOBS: "session-log" },
+    r2Buckets: { SESSION_LOG_BLOBS: "session-log", ATTACHMENTS: "attachments" },
     kvNamespaces: { WIRE_KEYS: "wire-keys" },
     serviceBindings: { EDGE: { name, entrypoint: "LiveCredentials" } },
   }],

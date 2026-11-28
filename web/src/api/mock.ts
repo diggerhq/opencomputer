@@ -139,6 +139,37 @@ function autumnMock() {
   return trial
 }
 
+// `?promo_state=` picks the Black Friday deal state: open (default), late (the
+// 12-month spots are gone), claimed, ineligible, none (404 → normal pricing).
+function promoMock() {
+  const scenario =
+    typeof window === 'undefined'
+      ? null
+      : new URLSearchParams(window.location.search).get('promo_state')
+  if (scenario === 'none') return NOT_FOUND
+  const promo = {
+    id: 'bfcm2026',
+    active: true,
+    endsAt: '2026-12-01T07:59:00Z',
+    earlyCap: 50,
+    earlyLeft: scenario === 'late' ? 0 : 37,
+    plans: {
+      pro: { price: 10, minutes: 4_000, normalPrice: 20, normalMinutes: 2_000 },
+      max: {
+        price: 100,
+        minutes: 50_000,
+        normalPrice: 200,
+        normalMinutes: 25_000,
+      },
+    },
+    eligible: scenario !== 'ineligible' && scenario !== 'claimed',
+    claim: null as null | { plan: 'pro'; months: number; endsAt: string },
+  }
+  if (scenario === 'claimed')
+    promo.claim = { plan: 'pro', months: 12, endsAt: '2027-11-27T00:00:00Z' }
+  return promo
+}
+
 const billing = {
   plan: 'free',
   billingProvider: 'autumn',
@@ -837,6 +868,7 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/api-keys$/, () => apiKeys],
   [/^\/github-star$/, () => githubStar],
   [/^\/billing\/autumn$/, () => autumnMock()],
+  [/^\/billing\/promo$/, () => promoMock()],
   [/^\/billing\/invoices/, () => ({ invoices: [] })],
   [/^\/billing$/, () => billing],
   [/^\/org\/members$/, () => orgMembers],

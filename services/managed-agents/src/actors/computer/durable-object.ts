@@ -250,14 +250,12 @@ type SessionRow = {
   mode: CalvinMode | null;
   model: string | null;
   speed: string | null;
-  sdkSessionId: string | null;
-  forkPath: string | null;
   status: string | null;
   updatedAt: number;
 };
 
 const SESSION_SELECT = `SELECT runner_key AS key, team_id AS teamId, channel_id AS channelId, thread_ts AS threadTs,
-  owner_id AS ownerId, title, mode, model, speed, sdk_session_id AS sdkSessionId, fork_path AS forkPath, status,
+  owner_id AS ownerId, title, mode, model, speed, status,
   updated_at AS updatedAt FROM sessions`;
 const PLAN_TTL_MS = 10 * 60_000;
 /**
@@ -2509,11 +2507,12 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
   }
 
   private async report(report: CalvinSessionReport): Promise<void> {
+    // `sdk_session_id` is read back in one place, session-drain.ts `spec`: it goes on every spec, so a runner started later resumes.
     this.ctx.storage.sql.exec(
       `UPDATE sessions SET sdk_session_id = COALESCE(?, sdk_session_id), fork_path = COALESCE(?, fork_path),
               mode = COALESCE(?, mode), model = COALESCE(?, model), speed = COALESCE(?, speed), status = ?, updated_at = ?
        WHERE runner_key = ?`,
-      report.sdkSessionId ?? null,
+      report.sdkSessionId || null,
       report.forkPath ?? null,
       report.mode ?? null,
       report.model ?? null,

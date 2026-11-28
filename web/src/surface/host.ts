@@ -1,4 +1,4 @@
-import type { Channel, Principal } from '@opencomputer/sdk/computer'
+import type { Channel, Principal, UploadRequest } from '@opencomputer/sdk/computer'
 
 // What the surface is given by whatever it runs in (spec section 25). The web
 // tab and the Mac app differ only behind this.
@@ -17,7 +17,14 @@ export interface Host {
   principal: Principal
   // The person's name, where the host knows it.
   name?: string
-  api: { fetch(path: string, init?: RequestInit): Promise<Response> }
+  api: {
+    fetch(path: string, init?: RequestInit): Promise<Response>
+    // An attachment's bytes to their signed URL, with progress (work 126, K3):
+    // XMLHttpRequest in a browser, where `fetch` reports none. `url` is
+    // absolute, on whatever host the server named, and is its own authority:
+    // no credential goes with it. Without this the client uses `fetch`.
+    uploadTo?(url: string, req: UploadRequest): Promise<Response>
+  }
   connect(): Channel
   notify(n: {
     threadId: string

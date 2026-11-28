@@ -18,6 +18,7 @@ export type {
   BillingState,
   AutumnAutoTopup,
   AutumnBilling,
+  BillingPromo,
   AgentSessionUsage,
   AgentSessionUsageRow,
   StripeInvoice,
@@ -313,14 +314,22 @@ export const autumnTopup = (credits: number) =>
 // billing.checkout_opened.
 export type CheckoutFrom = 'paywall' | 'warning' | 'billing_page' | 'signup'
 
+// `promo` claims a deal (e.g. 'bfcm2026') with this checkout; the edge checks
+// the org may still claim it.
 export const autumnSubscribeUsagePlan = (
   plan: 'pro' | 'max',
   from: CheckoutFrom = 'billing_page',
+  promo?: string,
 ) =>
   apiFetch<{ url: string | null }>('/billing/autumn/plan', {
     method: 'POST',
-    body: JSON.stringify({ plan, from }),
+    body: JSON.stringify({ plan, from, ...(promo ? { promo } : {}) }),
   })
+
+// The current plan deal for this org. 404 when there is none (or the edge
+// predates it): callers show normal pricing.
+export const getBillingPromo = () =>
+  apiFetch('/billing/promo', {}, S.BillingPromoSchema)
 
 // Cancel the paid plan at the end of the period, or undo that (undo also
 // drops a scheduled $200 → $20 downgrade).

@@ -93,6 +93,7 @@ export function selfhostBillingPath(path: string): boolean {
   return (
     under("/api/dashboard/billing") ||
     under("/api/billing") ||
+    path.startsWith("/api/public/promo/") ||
     path === "/api/dashboard/github-star/claim" ||
     path === "/webhooks/stripe" ||
     path === "/webhooks/autumn" ||

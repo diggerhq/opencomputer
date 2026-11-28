@@ -7,6 +7,7 @@ import {
   type CheckoutFrom,
 } from '@/api/client'
 import { notifyError } from '@/lib/errors'
+import { useBillingPromo } from '@/hooks/useBillingPromo'
 import {
   PLAN_NAMES,
   formatUsd,
@@ -26,12 +27,17 @@ export function useBillingActions(options: {
   onPlanChanged?: (plan: PaidPlanId) => void
 }) {
   const queryClient = useQueryClient()
-  const refresh = () =>
+  // A deal shown on screen (half price, double minutes) rides along with the
+  // checkout so the edge applies it; without one the call is unchanged.
+  const { checkoutPromo } = useBillingPromo()
+  const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['autumn-billing'] })
+    void queryClient.invalidateQueries({ queryKey: ['billing-promo'] })
+  }
 
   const subscribe = useMutation({
     mutationFn: (plan: PaidPlanId) =>
-      autumnSubscribeUsagePlan(plan, options.from),
+      autumnSubscribeUsagePlan(plan, options.from, checkoutPromo),
     onSuccess: (data, plan) => {
       trackCheckoutStarted({ plan, usagePlan: options.usagePlan })
       options.onPlanChanged?.(plan)

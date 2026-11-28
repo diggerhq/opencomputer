@@ -27,11 +27,44 @@ const CODES: Record<string, string> = {
   conflict: 'it changed meanwhile',
   not_found: 'it no longer exists',
   internal: 'something went wrong on our side',
+  // Attachments (work 126).
+  attachment_too_large: 'a file is over the size limit',
+  attachment_quota: 'this thread has no room for more files',
+  attachment_deleted: 'a file expired before it was sent',
+  attachment_not_ready: 'a file had not finished uploading',
+  attachment_not_found: 'a file is no longer here',
+  attachment_lost: 'the upload of a file was interrupted',
+  too_many_attachments: 'a message can carry at most 10 files',
 }
 
 export const OUT_OF_CREDITS = new Set(['insufficient_credits', 'http_402'])
 export function sayFailure(f: Pick<Failure, 'code' | 'reason'>): string {
   return f.reason || CODES[f.code] || f.code
+}
+
+// Why a pull request was not merged, or its merge not reverted (work 118).
+const MERGE: Record<string, string> = {
+  changed: 'it changed since you looked',
+  conflicts: 'it conflicts with its base branch',
+  draft: 'it is a draft',
+  closed: 'it is closed',
+  not_merged: 'it is not merged',
+  stale: 'that click was a while ago, so merge again if you still mean it',
+  checks_failing: 'a check did not pass',
+  checks_running: 'its checks are still running',
+  merging: 'someone else is merging it',
+  writers_only: 'only people who can write to this thread can merge it',
+  github_not_connected: 'GitHub is not connected',
+}
+export function sayMergeFailure(f: Pick<Failure, 'code' | 'reason' | 'detail'>): string {
+  const { message, check } = (f.detail ?? {}) as { message?: unknown; check?: unknown }
+  if (f.reason === 'checks_failing' && typeof check === 'string') return `its check “${check}” did not pass`
+  if (f.reason === 'checks_running' && typeof check === 'string') return `its check “${check}” is still running`
+  const said = MERGE[f.reason] ?? MERGE[f.code]
+  if (said) return said
+  // GitHub's own words: a rule of the repository, a failing required check.
+  if (f.reason === 'blocked' && typeof message === 'string') return `GitHub said “${message.replace(/\.$/, '')}”`
+  return sayFailure(f)
 }
 
 const SAID: Partial<Record<string, string>> = {
@@ -41,6 +74,8 @@ const SAID: Partial<Record<string, string>> = {
   'track.create': 'Could not make the track',
   'doc.save': 'Could not save the Doc',
   undo: 'Could not undo that',
+  'result.merge': 'Not merged',
+  'result.revert': 'Could not revert the merge',
 }
 // What did not go through, as the start of the toast.
 export function whatFailed(e: Pending): string {

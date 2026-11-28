@@ -44,6 +44,7 @@ import {
   BillingWarningBanner,
   HaltModal,
 } from '@/components/billing-surfaces'
+import { PromoBanner, PromoWelcomeModal } from '@/components/promo-surfaces'
 import {
   getManagedMemoryResources,
   getManagedProject,
@@ -478,8 +479,10 @@ export default function AppShell() {
       <div className="flex flex-1 flex-col md:pt-16 md:pl-60">
         <div className="sticky top-14 z-20 md:top-16">
           <BillingWarningBanner />
+          <PromoBanner />
         </div>
         <HaltModal />
+        <PromoWelcomeModal />
         <main
           className={cn(
             'mx-auto flex w-full flex-1 flex-col px-4 py-6 sm:px-8',

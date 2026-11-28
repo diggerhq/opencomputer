@@ -1,5 +1,33 @@
 # Changelog
 
+## 3.3.0
+
+- `@opencomputer/sdk/computer`: files attached to a message.
+  `attach(sessionId, file)` uploads a file ahead of its message, straight to
+  a signed URL, and answers its id and a `Signal<PendingAttachment>` with the
+  progress; `send` and `createSession` take the ids in `attachments` (at most
+  `ATTACHMENTS_PER_MESSAGE`) and wait until every one is `ready`.
+  `attachments()` lists the pending ones, `removeAttachment(id)` drops one,
+  and `attachmentUrl(sessionId, id, { download })` answers a signed URL of a
+  sent one. `ClientOptions.uploadTo(url, req)` sends the bytes with progress
+  (default: `fetch`, without credentials and without progress).
+- `Capabilities.features.attachments`: false when the deployment has no
+  store for files (missing on an older server: read it as true).
+
+## 3.2.0
+
+- `@opencomputer/sdk/computer`: a `pr` result carries `pull` (`PullRecord`),
+  what the platform knows of its pull request: `head`, `draft`, `checks`, a
+  merge or revert under way (`merging`, `reverting`), and the merge and revert
+  made of it (`merge`, `revert`). It is null until GitHub has said anything.
+- Changed: a pull request's check conclusion is `pull.checks`. It was
+  `meta.checks`; `meta` is now only what the agent wrote.
+- New mutations `result.merge` (`{ resultId, head?, at? }`) and
+  `result.revert` (`{ resultId }`): a person merges a thread's pull request,
+  and reverts the merge. `head` is the commit they saw and `at` when they
+  clicked; a merge of another head, or of a click older than five minutes, is
+  refused.
+
 ## 3.1.3
 
 - New entry point `@opencomputer/sdk/computer`: the client of Computer's

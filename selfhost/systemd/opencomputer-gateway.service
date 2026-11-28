@@ -26,8 +26,9 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/selfhost
-# The first start may build the gateway image.
-TimeoutStartSec=900
+# No long start timeout: nothing builds here. host-install.sh pulls (or, with
+# --build-gateway, builds) the image compose.yaml pins; were it gone, `up`
+# pulls it again, which takes about a minute.
 ExecStart=podman-compose -f compose.yaml up --abort-on-container-exit
 ExecStop=podman-compose -f compose.yaml stop
 Restart=always

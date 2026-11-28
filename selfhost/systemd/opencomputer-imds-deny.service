@@ -1,0 +1,36 @@
+# Installed as is by selfhost/host-install.sh to
+# /etc/systemd/system/opencomputer-imds-deny.service (no @NAMES@).
+#
+# Denies the cloud instance metadata service (the VM's cloud credentials) to
+# every user but root, on every self-host and every cloud: an allowlist of
+# root, where slack-presence-imds-block.service (kept, defense in depth) is a
+# blocklist of the agent uid. Root's agents (cloud-init, ssm-agent,
+# walinuxagent, google-guest-agent) keep working.
+#
+# Two ports stay open to the metadata address for everyone, from rules above
+# the REJECT: 53, because GCP's resolver is 169.254.169.254 and
+# systemd-resolved is not root; and udp 123, because GCP's NTP server is the
+# same address and chrony drops to _chrony.
+#
+# The rules live in chain OC-IMDS, jumped to from OUTPUT for the metadata
+# addresses (IPv4 169.254.169.254, AWS IPv6 fd00:ec2::254, GCP IPv6
+# fd20:ce::254). Each start flushes and refills the chain, so a restart is
+# idempotent and the jump is added once (-C || -I). The build offload's
+# exception (opencomputer-offload-imds.service, only on hosts that enabled it)
+# is a rule at the top of the chain; ExecStartPost puts it back after a refill
+# (--no-block: that unit is ordered after this one, which is still starting).
+# selfhost/check-imds.sh checks the result.
+[Unit]
+Description=Deny the cloud instance metadata service to every non-root user
+After=network-pre.target
+Before=slack-presence-host.service opencomputer-offload.service user.slice
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'iptables -N OC-IMDS 2>/dev/null; iptables -F OC-IMDS && iptables -A OC-IMDS -p udp --dport 53 -j RETURN && iptables -A OC-IMDS -p tcp --dport 53 -j RETURN && iptables -A OC-IMDS -p udp --dport 123 -j RETURN && iptables -A OC-IMDS -m owner --uid-owner 0 -j RETURN && iptables -A OC-IMDS -j REJECT && { iptables -C OUTPUT -d 169.254.169.254 -j OC-IMDS 2>/dev/null || iptables -I OUTPUT -d 169.254.169.254 -j OC-IMDS; }'
+ExecStart=-/bin/sh -c 'ip6tables -N OC-IMDS 2>/dev/null; ip6tables -F OC-IMDS && ip6tables -A OC-IMDS -p udp --dport 53 -j RETURN && ip6tables -A OC-IMDS -p tcp --dport 53 -j RETURN && ip6tables -A OC-IMDS -p udp --dport 123 -j RETURN && ip6tables -A OC-IMDS -m owner --uid-owner 0 -j RETURN && ip6tables -A OC-IMDS -j REJECT && for a in fd00:ec2::254 fd20:ce::254; do ip6tables -C OUTPUT -d $a -j OC-IMDS 2>/dev/null || ip6tables -I OUTPUT -d $a -j OC-IMDS || exit 1; done'
+ExecStartPost=-/bin/systemctl --no-block try-restart opencomputer-offload-imds.service
+
+[Install]
+WantedBy=multi-user.target

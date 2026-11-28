@@ -10,8 +10,10 @@ import type { Layout } from '../store/surface-state'
 import type { ThreadView } from '../store/views'
 import { I } from './icons'
 import { ACTS, BLOCK, COMPOSER, HD, IN } from './pane-classes'
+import { mergeable, pullNumber, refusalOf } from '../store/pulls'
 import { resultDetail, resultTitle } from './result-text'
 import { useConfirm } from './use-confirm'
+import { MergeButton } from './MergeButton'
 import { ResultIcon } from './ResultIcon'
 import { Rich } from './Rich'
 import { Tip } from './Tip'
@@ -77,6 +79,9 @@ function Proposal({ p, thread }: { p: ProposalRow; thread: ThreadView }) {
   const change = thread.results.find(
     (r) => r.type === 'pr' || r.type === 'changes',
   )
+  // Work 118: merging is its own act, not Done. One open pull request that can merge is offered first.
+  const pulls = thread.results.filter((r) => mergeable(r))
+  const pull = pulls.length === 1 ? pulls[0] : null
   const accept = () => surface.accept(p.id)
   const dismiss = () => surface.dismissProposal(p.id)
   return (
@@ -94,11 +99,27 @@ function Proposal({ p, thread }: { p: ProposalRow; thread: ThreadView }) {
       <div className={ACTS}>
         {p.type === 'done' ? (
           <>
-            <Button size="sm" onClick={accept}>
+            {pull && (
+              <Button size="sm" onClick={() => surface.merge(pull.id)}>
+                Merge #{pullNumber(pull)}
+                <Kbd className="bg-primary-foreground/15 text-primary-foreground">
+                  M
+                </Kbd>
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant={pull ? 'outline' : 'default'}
+              onClick={accept}
+            >
               Done
-              <Kbd className="bg-primary-foreground/15 text-primary-foreground">
-                E
-              </Kbd>
+              {pull ? (
+                <Kbd>E</Kbd>
+              ) : (
+                <Kbd className="bg-primary-foreground/15 text-primary-foreground">
+                  E
+                </Kbd>
+              )}
             </Button>
             {change && (
               <Button
@@ -143,6 +164,7 @@ function Results({
   ring: string | null
 }) {
   const surface = useSurface()
+  const unmerged = useS((s) => s.unmerged)
   const ref = useRef<HTMLDivElement>(null)
   const [all, setAll] = useState(false)
   // How many sit below the two rows shown.
@@ -171,24 +193,33 @@ function Results({
         )}
       >
         {results.map((r) => {
-          const detail = resultDetail(r)
+          const why = refusalOf(r, unmerged)
+          const detail = why ? `not merged: ${why}` : resultDetail(r)
+          const merge = mergeable(r)
           return (
-            <Button
-              key={r.id}
-              data-result
-              variant="secondary"
-              size="xs"
-              className="font-normal"
-              onClick={() => surface.openResult(r)}
-            >
-              <ResultIcon result={r} ring={ring === r.id} />
-              {resultTitle(r)}
-              {detail && (
-                <small className="text-muted-foreground text-xs tabular-nums @max-[560px]:hidden">
-                  {detail}
-                </small>
-              )}
-            </Button>
+            // One chip: the result, and where it can merge, a segment that merges it (work 118).
+            <span key={r.id} data-result className="inline-flex max-w-full">
+              <Button
+                variant="secondary"
+                size="xs"
+                className={cn('min-w-0 font-normal', merge && 'rounded-r-none')}
+                onClick={() => surface.openResult(r)}
+              >
+                <ResultIcon result={r} ring={ring === r.id} />
+                <span className="truncate">{resultTitle(r)}</span>
+                {detail && (
+                  <small
+                    className={cn(
+                      'text-muted-foreground text-xs tabular-nums @max-[560px]:hidden',
+                      why && 'text-status-pending',
+                    )}
+                  >
+                    {detail}
+                  </small>
+                )}
+              </Button>
+              <MergeButton result={r} className="border-background rounded-l-none border-l" />
+            </span>
           )
         })}
         {all && (
@@ -272,18 +303,20 @@ export function ThreadPane({ sid }: { sid: string }) {
   const settings = thread.session.settings
   const working = status === 'running' || status === 'starting'
 
-  // A typed reply to a single open question is its answer (T3).
+  // A typed reply to a single open question is its answer (T3); one with
+  // files is a message, since an answer carries none.
   const reply = (text: string, e: { meta: boolean }) => {
     const ask = thread.ask
     const qs =
       ask?.kind === 'question'
         ? ((ask.question?.questions ?? []) as { id?: string }[])
         : []
-    if (ask && qs.length === 1)
+    const files = surface.get().draftAttachments[`t:${sid}`]?.length
+    if (ask && qs.length === 1 && !files)
       surface.answer(sid, ask.id, {
         answers: [{ questionId: qs[0].id ?? '0', choices: [], text }],
       })
-    else surface.send(sid, text, { now: e.meta })
+    else surface.send(sid, text, { now: e.meta, draftKey: `t:${sid}` })
   }
 
   const menu = (): MenuItem[] => {
@@ -447,7 +480,6 @@ export function ThreadPane({ sid }: { sid: string }) {
             : 'Reply in this thread…'
         }
         onSend={reply}
-        onAttach={(text, files) => surface.sendWithFiles(sid, text, files)}
         className={COMPOSER}
         // A thread from Slack keeps the settings Slack gave it.
         tools={

@@ -7,6 +7,7 @@ import AppShell from './components/app-shell'
 import OldSessionRedirect from './components/old-session-redirect'
 import PublicTemplateRoute from './components/PublicTemplateRoute'
 import { templateDeployPathFromSearch } from './managed-agents/templates'
+import { promoIntentPath } from './lib/promo'
 
 // Route pages are code-split so the initial bundle stays small.
 const APIKeys = lazy(() => import('./pages/APIKeys'))
@@ -52,11 +53,15 @@ function NewProject() {
 }
 
 // `app.opencomputer.dev/?security=1` drops into the independent CVE Swarm
-// onboarding path; the param survives the login round-trip via returnTo.
+// onboarding path; `?promo=bfcm2026` (with an optional `plan=`) opens that
+// plan's checkout on Billing with the deal. Both survive the login round-trip
+// via returnTo.
 function HomeRoute() {
   const [searchParams] = useSearchParams()
   if (searchParams.get('security') === '1')
     return <Navigate to="/security" replace />
+  const promoPath = SELFHOST ? null : promoIntentPath(searchParams)
+  if (promoPath) return <Navigate to={promoPath} replace />
   return <ManagedAgentsHome />
 }
 
