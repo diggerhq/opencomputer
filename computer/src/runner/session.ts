@@ -123,6 +123,8 @@ export class Session {
   });
   /** A message went into the current harness; until then a credential change may replace it (prewarm). */
   private used = false;
+  /** The role note (role-notes.ts) went into the current harness's context, and no compaction has summarised it since. */
+  private noted = false;
   private touched = false;
   private timeline = new Timeline(
     () => this.out,
@@ -132,7 +134,11 @@ export class Session {
   private tools = new Map<string, { name: string; input: any }>();
   private heldSteer = new HeldSteer({ running: () => this.timeline.longestRunning(), say: (t) => this.say(t) });
   private thinking = new ThinkingCards(this.timeline, () => this.hooks.turns?.thinkingShown());
-  readonly compaction = new Compaction(this.timeline, (f) => this.hooks.turns?.compacted(f), () => this.busy);
+  readonly compaction = new Compaction(
+    this.timeline,
+    (f) => ((this.noted = false), this.hooks.turns?.compacted(f)),
+    () => this.busy,
+  );
   readonly shadow: Compactor;
   private ticker?: NodeJS.Timeout;
   private guard?: (text: string, end: boolean) => string;
@@ -224,8 +230,8 @@ export class Session {
     if (stopping) await (this.hooks.turns?.interrupting('interrupted'), this.stopTurn());
     else if (this.busy) this.rotate();
     const h = this.ensureHarness();
-    const body = this.notes.with(this.used ? text : prefaced(this.hooks.work, text));
-    this.used = true;
+    const body = this.notes.with(this.noted ? text : prefaced(this.hooks.work, text));
+    (this.used = true), (this.noted = true);
     if (this.busy) this.pending = true;
     if (!stopping) this.hooks.api?.sent(text, userId, this.busy && !urgent, from);
     // Mid-turn messages land at the next tool boundary, like Claude Code's queue.
@@ -299,7 +305,7 @@ export class Session {
   /** The harness, started if it is not up. */
   ensureHarness(): Harness {
     if (this.run) return this.run.harness;
-    this.used = false;
+    (this.used = false), (this.noted = false);
     const run = (this.run = this.kind.start(this.spec()));
     // Up once its start-up handshake answers, before any turn when prewarmed.
     Effect.runPromise(run.harness.ready).then(
@@ -318,13 +324,13 @@ export class Session {
 
   /** A claimed spare's harness (work 069, harness/claude/spare.ts): already up, as a prewarmed one is. */
   claimed(run: Running, parkedMs?: number) {
-    (this.run = run), (this.used = false), this.hooks.turns?.harnessStarted({ parkedMs }), void this.pump(run);
+    (this.run = run), (this.used = false), (this.noted = false), this.hooks.turns?.harnessStarted({ parkedMs }), void this.pump(run);
   }
 
   /** Continue on a compacted fork (harness/claude/shadow.ts): it replaces the harness as prewarm(true) does, and its id is persisted. */
   adopt(run: Running, sdkSessionId: string, ctxTokens: number) {
     const old = this.run;
-    (this.run = run), (this.info.sdkSessionId = sdkSessionId), (this.ctxTokens = ctxTokens);
+    (this.run = run), (this.info.sdkSessionId = sdkSessionId), (this.ctxTokens = ctxTokens), (this.noted = false);
     old && close(old), this.persist();
     if (this.info.kind === 'channel') void this.updateContextBar();
     void this.pump(run);
