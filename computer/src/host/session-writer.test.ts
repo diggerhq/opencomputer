@@ -42,7 +42,7 @@ const types = (es: JournalEvent[]) => es.map((e) => e.type);
 
 /** A turn a runner queued before it ended. */
 function queue(log: Awaited<ReturnType<typeof openLog>>, turnId: string, input: string) {
-  log.append('message.received', { input, ifBusy: 'queue', delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [] }, { turnId, actor: ANN });
+  log.append('message.received', { input, ifBusy: 'queue', delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [], attachments: [] }, { turnId, actor: ANN });
   log.append('turn.queued', { position: 1, trigger: 'message', subagentId: null }, { turnId, actor: ANN });
 }
 
@@ -140,7 +140,7 @@ describe('HostSessionWriter', () => {
         log.append('session.status_changed', { from: null, to: 'running' }, { actor: null });
         log.append(
           'message.received',
-          { input: 'work', ifBusy: 'queue', delivery: 'started', interruptedTurnIds: [], declinedAskIds: [] },
+          { input: 'work', ifBusy: 'queue', delivery: 'started', interruptedTurnIds: [], declinedAskIds: [], attachments: [] },
           { turnId: live, actor: ANN },
         );
         log.append('turn.started', { model: null, effort: null, mode: null, trigger: 'message', subagentId: null }, { turnId: live, actor: ANN });
@@ -191,7 +191,7 @@ describe('scanJournals', () => {
     log.append('session.status_changed', { from: null, to: 'running' }, { actor: null });
     const done = turn(log);
     const live = mintId('tn');
-    log.append('message.received', { input: 'work', ifBusy: 'queue', delivery: 'started', interruptedTurnIds: [], declinedAskIds: [] }, { turnId: live, actor: ANN });
+    log.append('message.received', { input: 'work', ifBusy: 'queue', delivery: 'started', interruptedTurnIds: [], declinedAskIds: [], attachments: [] }, { turnId: live, actor: ANN });
     log.append('turn.started', { model: null, effort: null, mode: null, trigger: 'message', subagentId: null }, { turnId: live, actor: ANN });
     log.append('tool.started', { subagentId: null, toolName: 'Bash', callId: 'c1', parentCallId: null, title: 'ls', input: {}, inputTruncated: false }, { turnId: live, actor: ANN });
     const queued = mintId('tn');

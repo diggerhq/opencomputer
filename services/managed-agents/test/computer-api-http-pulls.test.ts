@@ -33,7 +33,7 @@ async function deliver(env: Record<string, unknown>, event: string, payload: unk
 }
 
 const repository = { id: 7, full_name: "o/r" };
-const pr = { number: 3, title: "Fix", state: "closed", merged: true, html_url: "https://github.com/o/r/pull/3", base: { ref: "main" }, head: { sha: "a".repeat(40), repo: { id: 7 } } };
+const pr = { number: 3, title: "Fix", state: "closed", merged: true, merge_commit_sha: "b".repeat(40), html_url: "https://github.com/o/r/pull/3", base: { ref: "main" }, head: { sha: "a".repeat(40), repo: { id: 7 } } };
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -43,20 +43,23 @@ describe("pull request webhooks (spec 40.9)", () => {
     const env = { SERVERLESS_AGENTS_DB: db([{ account_id: ORG, installation_id: "i1" }, { account_id: "org_2", installation_id: "i2" }]), ORGS: { getByName: vi.fn(() => org) } };
     await deliver(env, "pull_request", { action: "closed", installation: { id: 42 }, repository, pull_request: pr });
     expect(org.acceptPull).toHaveBeenCalledTimes(2);
-    expect(org.acceptPull).toHaveBeenCalledWith({ url: pr.html_url, state: "merged", checks: null, title: "Fix", at: expect.any(Number) });
+    expect(org.acceptPull).toHaveBeenCalledWith({ url: pr.html_url, state: "merged", checks: null, title: "Fix", head: "a".repeat(40), draft: null, base: "main", sha: "b".repeat(40), at: expect.any(Number) });
     expect(env.ORGS.getByName.mock.calls.map((c) => (c as unknown[])[0])).toEqual([ORG, "org_2"]);
     await deliver(env, "pull_request", { action: "labeled", installation: { id: 42 }, repository, pull_request: pr });
     await deliver(env, "pull_request", { action: "opened", installation: { id: 43 }, repository, pull_request: pr });
     expect(org.acceptPull).toHaveBeenCalledTimes(2);
   });
 
-  it("a completed check suite reads each pull request and carries the conclusion", async () => {
+  it("a completed check suite reads each pull request and carries the conclusion, for the head it is of", async () => {
     const org = { acceptPull: vi.fn(async () => undefined) };
     const accounts = { mintGitHubInstallationToken: vi.fn(async () => ({ outcome: "minted", token: "t" })) };
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ...pr, state: "open", merged: false })));
     const env = { SERVERLESS_AGENTS_DB: db([{ account_id: ORG, installation_id: "i1" }]), ORGS: { getByName: () => org }, ACCOUNTS: { getByName: () => accounts } };
-    await deliver(env, "check_suite", { action: "completed", installation: { id: 42 }, repository, check_suite: { conclusion: "failure", pull_requests: [{ number: 3 }] } });
+    await deliver(env, "check_suite", { action: "completed", installation: { id: 42 }, repository, check_suite: { conclusion: "failure", head_sha: "a".repeat(40), pull_requests: [{ number: 3 }] } });
     expect(accounts.mintGitHubInstallationToken).toHaveBeenCalledWith({ installationId: "i1", permissions: { pull_requests: "read" } });
-    expect(org.acceptPull).toHaveBeenCalledWith(expect.objectContaining({ url: pr.html_url, state: "open", checks: "failure" }));
+    expect(org.acceptPull).toHaveBeenLastCalledWith(expect.objectContaining({ url: pr.html_url, state: "open", checks: "failure" }));
+    // A suite of a commit the pull request has moved on from says nothing of its head.
+    await deliver(env, "check_suite", { action: "completed", installation: { id: 42 }, repository, check_suite: { conclusion: "success", head_sha: "0".repeat(40), pull_requests: [{ number: 3 }] } });
+    expect(org.acceptPull).toHaveBeenLastCalledWith(expect.objectContaining({ head: "a".repeat(40), checks: null }));
   });
 });

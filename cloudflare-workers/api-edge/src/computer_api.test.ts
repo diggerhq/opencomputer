@@ -246,6 +246,12 @@ describe("computer API allowlist", () => {
     ["GET", "/computer/sessions/cs_01h/asks/toolu_1"],
     ["POST", "/computer/sessions/cs_01h/asks/toolu_1/answer"],
     ["POST", "/computer/sessions/cs_01h/asks/toolu_1/dismiss"],
+    ["GET", "/computer/sessions/cs_01h/attachments"],
+    ["GET", "/computer/sessions/cs_01h/attachments/at_01h"],
+    ["DELETE", "/computer/sessions/cs_01h/attachments/at_01h"],
+    ["PUT", "/computer/sessions/cs_01h/attachments/at_01h"],
+    ["POST", "/computer/sessions/cs_01h/attachments/at_01h/complete"],
+    ["GET", "/computer/sessions/cs_01h/attachments/at_01h/url"],
     ["GET", "/computer/sessions/cs_01h/subagents"],
     ["GET", "/computer/sessions/cs_01h/subagents/sa_01h"],
     ["POST", "/computer/sessions/cs_01h/subagents/sa_01h/stop"],
@@ -276,6 +282,12 @@ describe("computer API allowlist", () => {
     ["POST", "/computer/sessions/cs_01h/aside"],
     ["PUT", "/computer/sessions/cs_01h/workspace/file"],
     ["POST", "/computer/sessions/cs_01h/turns/tn_1"],
+    // Attachments: the row is made by the PUT of its id, there is no POST; the bytes never come here.
+    ["POST", "/computer/sessions/cs_01h/attachments"],
+    ["GET", "/computer/sessions/cs_01h/attachments/at_01h/content"],
+    ["PUT", "/computer/sessions/cs_01h/attachments/at_01h/content"],
+    ["GET", "/computer/sessions/cs_01h/attachments/at_01h/complete"],
+    ["PUT", "/computer/sessions/cs_01h/attachments/at_01h/url"],
     ["GET", "/computer/sessions/../me"],
     ["GET", "/computer/sessions/.hidden"],
     ["GET", "/computer/sessions/a%2Fb"],
@@ -656,6 +668,47 @@ describe("computer API proxy to blue", () => {
     expect(headers.get("x-opencomputer-surface")).toBeNull();
     // The dashboard mount names the member's principal too (the Slack install and unlink need it).
     expect(claims(headers.get("x-opencomputer-agent-token") ?? "").oc_principal).toMatchObject({ org: ORG, kind: "member", via: "dashboard" });
+  });
+});
+
+describe("attachments go to blue without their bytes", () => {
+  // Unlike workspace routes, attachments are a dashboard surface too: a cookie uploads what the composer picked.
+  it("sends a cookie's PUT of the row up, with the origin the caller reached", async () => {
+    const upload = { url: `${ORIGIN}/v1/computer/attachment-objects/o/cs_1/at_1?sig=s`, method: "PUT", headers: { "content-type": "image/png" } };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ attachment: { id: "at_1", state: "uploading" }, upload }, { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await worker.fetch(
+      api("/sessions/cs_1/attachments/at_1", {
+        method: "PUT",
+        headers: { cookie: await sessionCookie(), origin: ORIGIN, "content-type": "application/json", "x-opencomputer-public-origin": "https://evil.test" },
+        body: JSON.stringify({ name: "a.png", mimetype: "image/png", bytes: 2 }),
+      }),
+      testEnv(new FakeDB()),
+      testCtx().ctx,
+    );
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({ upload });
+    const { url, init, headers } = sent(fetchMock);
+    expect(url).toBe(`${BLUE}/v1/computer/sessions/cs_1/attachments/at_1`);
+    expect(init.method).toBe("PUT");
+    // Ours, never the caller's own header.
+    expect(headers.get("x-opencomputer-public-origin")).toBe(ORIGIN);
+    expect(headers.get("x-opencomputer-agent-token")).toEqual(expect.any(String));
+  });
+
+  it("passes a key's complete and url calls through", async () => {
+    const db = new FakeDB();
+    const key = await addKey(db);
+    const fetchMock = vi.fn(async () => Response.json({ url: "https://store.test/x?sig=s", expiresAt: "2030-01-01T00:00:00.000Z" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const done = await worker.fetch(api("/sessions/cs_1/attachments/at_1/complete", { method: "POST", headers: { authorization: `Bearer ${key}` } }), testEnv(db), testCtx().ctx);
+    expect(done.status).toBe(200);
+    expect(sent(fetchMock).url).toBe(`${BLUE}/v1/computer/sessions/cs_1/attachments/at_1/complete`);
+    const res = await worker.fetch(api("/sessions/cs_1/attachments/at_1/url?disposition=attachment", { headers: { authorization: `Bearer ${key}` } }), testEnv(db), testCtx().ctx);
+    expect(await res.json()).toMatchObject({ url: "https://store.test/x?sig=s" });
+    const { url, headers } = sent(fetchMock, 1);
+    expect(url).toBe(`${BLUE}/v1/computer/sessions/cs_1/attachments/at_1/url?disposition=attachment`);
+    expect(headers.get("x-opencomputer-public-origin")).toBe(ORIGIN);
   });
 });
 
@@ -1111,6 +1164,7 @@ describe("computer API telemetry: one edge.request per call", () => {
         `/computer/sessions/${SID}/events`,
         `/computer/sessions/${SID}/asks/toolu_1/answer`,
         `/computer/sessions/${SID}/subagents`,
+        `/computer/sessions/${SID}/attachments/at_1/url`,
         "/computer/secrets",
         "/computer/me/secrets/X",
         "/computer/organization/secrets/X",
@@ -1122,7 +1176,7 @@ describe("computer API telemetry: one edge.request per call", () => {
       ].map(computerApiRouteFamily),
     ).toEqual([
       "me", "tickets", "sessions", "sessions", "sessions", "sessions", "control", "turns", "events", "asks",
-      "subagents", "secrets", "secrets", "secrets", "secrets", "workspace", "work", "work", "other",
+      "subagents", "attachments", "secrets", "secrets", "secrets", "secrets", "workspace", "work", "work", "other",
     ]);
   });
 });

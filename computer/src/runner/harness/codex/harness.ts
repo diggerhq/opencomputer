@@ -219,7 +219,7 @@ export class CodexHarness implements Harness {
     let resumed = false;
     let thread: string | undefined;
     if (spec.resume) {
-      // Not this harness's (a Claude session id) or gone: a new thread, as a lost Claude session starts over.
+      // Not this harness's (a Claude session id) or gone: a new thread, as a Claude session with no transcript starts over (claude/resume.ts).
       thread = await srv
         .request<{ thread: { id: string } }>('thread/resume', { threadId: spec.resume, ...common })
         .then((r) => r.thread.id)

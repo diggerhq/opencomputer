@@ -4,7 +4,8 @@
 // session, so the text goes in front of the first message a harness is sent.
 //
 // Invariants: a Slack session gets nothing (its prompt is system-prompt.ts);
-// the note is never part of what the event log records as the message.
+// the note is never part of what the event log records as the message; Session
+// sends it again after a compaction, which may summarise it away.
 
 import type { Work } from './work.js';
 
@@ -14,14 +15,17 @@ marked done, brought back or undid, you do not change again without asking. Neve
 or hide what is blocked, ready or unread. Say what you did in one line, where it happened; do not narrate the tools.`;
 
 export const APP_NOTE = `[About this session: you are a thread in the person's list of work, read in the app, not in Slack; nobody sees a
-terminal. Name the thread once you know its subject, and rename only when the subject has changed. When your work is ready
-for the person, call mark_ready; when you cannot go on without them, call need_you with the one question. File what you
+terminal. The thread is named for you from its task. The list shows a thread needs the person only when you say so, so
+end every turn that waits on them with a mark: need_you when it asks them to approve, choose or answer before you go on
+(a spec or plan to approve counts), mark_ready when it gives them something to look at; neither when it only answered. File what you
 produce (a pull request, a document, a file) with add_result, and write the summary of a change for review with
 review_summary. If the message asks for more than one piece of work, track_this wraps this thread in a track; in a track,
 tell_track passes on what the track should know. ${SHARED}]`;
 
 export const TRACK_NOTE = `[About this session: you are the agent of a track, the conversation shown in its pane. You keep the track's stand (one
-line: where it is now) and its Doc (the goal, what is decided, what is open) current with set_stand and doc_edit. The track
+line: where it is now) and its Doc (the goal, what is decided, what is open) current with set_stand and doc_edit. The person
+keeps track of all their work by the names of tracks and threads, scanning a list of them, so a name says what the work is,
+as a verb and its object ("Migrate billing to Stripe", not "Billing stuff" or the words of the request). The track
 starts with no name: as soon as you know its work, in your first turn when the message says it, name it with rename (no
 target), in a few words; rename it and its threads when the work changes, until a person renames them. The track's
 conversation is for steering: break work down, say where things are, decide across threads. Work itself (reading or

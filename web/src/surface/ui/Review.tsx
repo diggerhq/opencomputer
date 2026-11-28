@@ -29,7 +29,9 @@ import { useTheme } from '@/hooks/useTheme'
 import { cn } from '@/lib/utils'
 import { I } from './icons'
 import { HD, LEFT } from './pane-classes'
-import { resultTitle } from './result-text'
+import { mergeable } from '../store/pulls'
+import { MergeButton } from './MergeButton'
+import { pullState, resultTitle } from './result-text'
 import { Mk } from './Mark'
 import { Rich } from './Rich'
 
@@ -346,7 +348,7 @@ function FileSnip({
   const more = head ? file.meta.unifiedLineCount - head.unifiedLineCount : 0
   return (
     <div
-      className="bg-card ring-border mb-3 overflow-clip rounded-[10px] ring-1"
+      className="bg-card ring-border mb-3 overflow-clip rounded-xl ring-1"
       data-path={file.path}
     >
       <button
@@ -453,7 +455,7 @@ function ExcerptCard({
       : `line ${nf(x.start)}`
   return (
     <div
-      className="bg-card ring-border mb-3 overflow-clip rounded-[10px] ring-1"
+      className="bg-card ring-border mb-3 overflow-clip rounded-xl ring-1"
       data-excerpt={x.path}
     >
       <button
@@ -498,7 +500,7 @@ function FileList({
   const [all, setAll] = useState(false)
   const shown = all ? part.files : part.files.slice(0, FEW * 2)
   return (
-    <div className="ring-border mb-3 overflow-clip rounded-[10px] ring-1">
+    <div className="ring-border mb-3 overflow-clip rounded-xl ring-1">
       {shown.map((f) => {
         const note = part.notes.get(f.path)
         return (
@@ -654,7 +656,7 @@ function Summary({
             </p>
           )}
           {eyes.length > 0 && (
-            <div className="bg-status-pending-bg ring-status-pending/25 mb-2 rounded-[10px] px-4 py-3 ring-1 ring-inset">
+            <div className="bg-status-pending-bg ring-status-pending/25 mb-2 rounded-xl px-4 py-3 ring-1 ring-inset">
               <b className="font-semibold">
                 {eyes.length === 1 ? 'One thing' : `${eyes.length} things`}{' '}
                 worth your eye
@@ -903,7 +905,7 @@ function Full({ parts, resultId }: { parts: Part[]; resultId: string }) {
             ),
             p.files.map((f) => (
               <div
-                className="ring-border mb-4 overflow-clip rounded-[10px] ring-1"
+                className="ring-border mb-4 overflow-clip rounded-xl ring-1"
                 data-path={f.path}
                 key={f.path}
               >
@@ -974,6 +976,8 @@ function Changes({ result }: { result: ResultRow }) {
   const files = h.diff?.files
   const parts = useMemo(() => group(h.review, files), [h.review, files])
   const title = resultTitle(result)
+  const state = pullState(result)
+  const merge = mergeable(result)
 
   return (
     <>
@@ -1005,6 +1009,7 @@ function Changes({ result }: { result: ResultRow }) {
         </ToggleGroup>
         <span className="flex-1" />
         <span className={cn(SUB, 'shrink-[99]')}>{title}</span>
+        {state && <span className={cn(SUB, 'flex-none')}>{state}</span>}
         {h.diff && (
           <span className={cn(SUB, 'flex-none tabular-nums')}>
             {filesWord(h.diff.files.length)} ·{' '}
@@ -1022,9 +1027,12 @@ function Changes({ result }: { result: ResultRow }) {
             Open on GitHub
           </Button>
         )}
+        {/* Merging is its own act, not Done: offered first, as in the thread pane. */}
+        <MergeButton result={result} variant="default" size="sm" className={cn(BTN, 'ml-2')} />
         {thread && !thread.done && (
           <Button
             size="sm"
+            variant={merge ? 'outline' : 'default'}
             className={cn(BTN, 'ml-2')}
             onClick={() => {
               // A21: done without leaving the review first; lands on the thread.

@@ -89,6 +89,26 @@ export type Answer =
   | { decision: "allow" | "deny" | "always"; message?: string }
   | { answers: { questionId: string; choices: string[]; text: string | null }[] };
 
+/** What `message.received` carries per file (work 126): metadata only; the bytes are read by the signed URL of `GET …/attachments/{id}/url`. */
+export interface AttachmentRef {
+  id: string;
+  name: string;
+  mimetype: string;
+  bytes: number;
+}
+
+export type AttachmentState = "uploading" | "ready" | "attached" | "deleted";
+
+/** The server's `Attachment` object (`GET` and `PUT /sessions/{sid}/attachments/{id}`, `POST …/complete`). */
+export interface Attachment extends AttachmentRef {
+  sessionId: string;
+  by: Actor;
+  state: AttachmentState;
+  etag: string | null;
+  createdAt: string;
+  attachedTo: { turnId: string; messageId?: string | null } | null;
+}
+
 export interface ApiEvent {
   id: string;
   seq: number;

@@ -214,6 +214,8 @@ describe("the allowlist of tracks and threads", () => {
     ["PUT", "/work/tracks/trk_1/doc"],
     ["PUT", "/work/results/res_1"],
     ["PUT", "/work/results/res_1/review"],
+    ["POST", "/work/results/res_1/merge"],
+    ["POST", "/work/results/res_1/revert"],
     ["POST", "/work/proposals"],
     ["POST", "/work/proposals/prp_1/accept"],
     ["POST", "/work/proposals/prp_1/dismiss"],

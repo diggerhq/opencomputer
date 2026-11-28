@@ -74,6 +74,8 @@ const undo: MutationFn = (tx, p: Principal, args) => {
   if (!op) return refuse("not_found");
   if (p.kind !== "platform" && !(isMember(p) && ownerOf(tx, op) === p.subject)) return refuse("not_found");
   if (op.undone_by !== null) return refuse("refused", "undone");
+  // A merge is undone on GitHub, by `result.revert`.
+  if (op.name === "result.merge" || op.name === "result.revert") return refuse("refused", "on_github");
 
   const plan = planOf(op);
   const changed = drift(tx, plan);
