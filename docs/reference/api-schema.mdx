@@ -34,7 +34,7 @@ Every write (a method with `idempotencyKey`) is HTTP only, with the key in the `
 | `subagents.list` | `GET /sessions/{id}/subagents` | `sessionId`, `status?` (`running`, `all`), `limit?` (1 to 100), `cursor?` | `subagents`, `nextCursor \| null` |
 | `subagents.get` | `GET /sessions/{id}/subagents/{subagentId}` | `sessionId`, `subagentId` | `subagent` |
 | `subagents.stop` | `POST /sessions/{id}/subagents/{subagentId}/stop` | `sessionId`, `subagentId`, `idempotencyKey?` | `subagent`, `seq` |
-| `events.list` | `GET /sessions/{id}/events` | `sessionId`, `after?` (over HTTP an opaque cursor, and a bare `seq` is `409 reset`; over the WebSocket a `seq`), `limit?` (1 to 500, default 100), `tailTurns?` (1 to 50, not with `after`), `turnId?`, `types?` | `events`, `cursor` (HTTP only), `earlierTurns \| null`, `lastSeq`, `hasMore` |
+| `events.list` | `GET /sessions/{id}/events` | `sessionId`, `after?` (over HTTP an opaque cursor, and a bare `seq` is `409 reset`; over the WebSocket a `seq`), `limit?` (1 to 500, default 100), `tailTurns?` (1 to 50, not with `after`), `turnId?`, `types?`; over HTTP only, `last?` (1 to 500, not with `after`, `limit` or `tailTurns`) and `before?` (an opaque cursor, with `last`) | `events`, `cursor` (HTTP only), `earlierTurns \| null`, `lastSeq`, `hasMore`; with `last`: `events`, `cursor`, `prevCursor`, `hasMoreBefore`, `lastSeq` |
 | `terminals.open` | WebSocket only | `sessionId`, `cols?`, `rows?` (1 to 1,000 each), `command?` (up to 10,000 characters), `tty?`, `term?` (up to 64 characters) | `terminal.id`, `terminal.channel`, `terminal.stderrChannel \| null` |
 | `terminals.resize` | WebSocket only | `terminalId`, `cols`, `rows` | empty |
 | `terminals.eof` | WebSocket only | `terminalId` | empty |

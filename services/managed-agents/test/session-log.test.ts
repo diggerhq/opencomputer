@@ -326,6 +326,59 @@ describe("SessionLog reads", () => {
     expect(await log.stub.events({ after: after(1, 9) }, member())).toMatchObject({ ok: false, error: "reset", seq: 8 });
   });
 
+  it("eventsBefore reads the log's end, then back from prevCursor, in ascending order", async () => {
+    const log = await open();
+    await log.stub.append(log.identity, 1, busyLog(log));
+
+    const end = await log.stub.eventsBefore({ last: 3 }, member());
+    if (!end.ok) throw new Error("refused");
+    expect(end.events.map((e) => e.seq)).toEqual([6, 7, 8]);
+    expect(end).toMatchObject({ cursor: after(1, 8), prevCursor: after(1, 5), hasMoreBefore: true, lastSeq: 8 });
+    expect(end).not.toHaveProperty("hasMore");
+    for (const event of end.events) validEvent(event);
+    // `cursor` is where a forward read goes on from: nothing yet.
+    expect(await log.stub.events({ after: end.cursor }, member())).toMatchObject({ ok: true, events: [], hasMore: false });
+
+    const back = await log.stub.eventsBefore({ last: 3, before: end.prevCursor }, member());
+    if (!back.ok) throw new Error("refused");
+    expect(back.events.map((e) => e.seq)).toEqual([3, 4, 5]);
+    expect(back).toMatchObject({ cursor: after(1, 5), prevCursor: after(1, 2), hasMoreBefore: true });
+
+    // The start of the log: fewer than asked for, and nothing before.
+    const start = await log.stub.eventsBefore({ last: 500, before: back.prevCursor }, member());
+    if (!start.ok) throw new Error("refused");
+    expect(start.events.map((e) => e.seq)).toEqual([1, 2]);
+    expect(start).toMatchObject({ prevCursor: after(1, 0), hasMoreBefore: false });
+    const none = await log.stub.eventsBefore({ last: 5, before: start.prevCursor }, member());
+    expect(none).toMatchObject({ ok: true, events: [], cursor: after(1, 0), prevCursor: after(1, 0), hasMoreBefore: false, lastSeq: 8 });
+
+    // Exactly as many as there are is not "more".
+    expect(await log.stub.eventsBefore({ last: 8 }, member())).toMatchObject({ ok: true, prevCursor: after(1, 0), hasMoreBefore: false });
+  });
+
+  it("eventsBefore on an empty log, with filters, and with a before the log does not hold", async () => {
+    const empty = await open();
+    expect(await empty.stub.eventsBefore({ last: 200 }, member())).toMatchObject({ ok: true, events: [], hasMoreBefore: false, lastSeq: 0 });
+
+    const log = await open();
+    await log.stub.append(log.identity, 1, busyLog(log));
+    // Filters count matching events; `cursor` stays the place the read ended at.
+    const t2 = await log.stub.eventsBefore({ last: 1, turnId: T2 }, member());
+    if (!t2.ok) throw new Error("refused");
+    expect(t2.events.map((e) => e.seq)).toEqual([8]);
+    expect(t2).toMatchObject({ cursor: after(1, 8), prevCursor: after(1, 7), hasMoreBefore: true });
+    const tools = await log.stub.eventsBefore({ last: 5, types: ["tool.*", "turn.queued"] }, member());
+    if (!tools.ok) throw new Error("refused");
+    expect(tools.events.map((e) => e.type)).toEqual(["tool.started", "turn.queued"]);
+    expect(tools.hasMoreBefore).toBe(false);
+
+    // The same refusals as `after`: past the end is a reset to the end, an unreadable one a reset with no cursor.
+    expect(await log.stub.eventsBefore({ last: 5, before: after(1, 9) }, member())).toMatchObject({ ok: false, error: "reset", cursor: after(1, 8), seq: 8 });
+    expect(await log.stub.eventsBefore({ last: 5, before: after(2, 3) }, member())).toEqual({ ok: false, error: "reset", cursor: null });
+    expect(await log.stub.eventsBefore({ last: 5, before: "12" }, member())).toEqual({ ok: false, error: "reset", cursor: null });
+    expect(await log.stub.eventsBefore({ last: 5, minSeq: 100 }, member())).toEqual({ ok: false, error: "unavailable", lastSeq: 8, retryAfterMs: 500 });
+  });
+
   it("tailTurns returns the last turns' events and the earlier turns, newest first", async () => {
     const log = await open();
     const { ev } = log;

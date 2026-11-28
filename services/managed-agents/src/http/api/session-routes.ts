@@ -192,23 +192,27 @@ export async function actorRoute(request: Request, env: ResultDiffEnv, p: Princi
       const after = query.get("after") ?? undefined;
       // A cursor the module cannot read (a bare seq of the old API included) is reset with no cursor.
       if (after !== undefined && !cursor.read("e", after)) return out.error(409, "reset", "after is not a cursor of this session's events.", { cursor: null });
+      const before = query.get("before") ?? undefined;
+      if (before !== undefined && !cursor.read("e", before)) return out.error(409, "reset", "before is not a cursor of this session's events.", { cursor: null });
       const lim = limit(500);
       const tailTurns = intParam(query, "tailTurns", 1, 50);
-      for (const [name, v] of [["limit", lim], ["tailTurns", tailTurns]] as const) {
+      const last = intParam(query, "last", 1, 500);
+      for (const [name, v] of [["limit", lim], ["tailTurns", tailTurns], ["last", last]] as const) {
         if (v === null) return out.error(400, "invalid_request", `${name} is out of range.`, { field: name });
       }
       if (tailTurns !== undefined && after !== undefined) return out.error(400, "invalid_request", "tailTurns cannot be sent with after.", { field: "tailTurns" });
+      // A backward read (`last`, with or without `before`) is its own direction: nothing of a forward one goes with it.
+      for (const [name, v] of [["after", after], ["limit", lim], ["tailTurns", tailTurns]] as const) {
+        if (last !== undefined && v !== undefined) return out.error(400, "invalid_request", `last cannot be sent with ${name}.`, { field: "last" });
+      }
+      if (before !== undefined && last === undefined) return out.error(400, "invalid_request", "before is sent with last.", { field: "before" });
       const types = query.get("types")?.split(",").filter(Boolean);
       const turnId = query.get("turnId") ?? undefined;
-      const q = {
-        ...(after !== undefined ? { after } : {}),
-        ...(typeof lim === "number" ? { limit: lim } : {}),
-        ...(typeof tailTurns === "number" ? { tailTurns } : {}),
-        ...(types?.length ? { types } : {}),
-        ...(turnId ? { turnId } : {}),
-        ...(minSeq !== undefined ? { minSeq } : {}),
-      };
-      const r = await timedLog(out.facts, log.events(q, p));
+      const which = { ...(types?.length ? { types } : {}), ...(turnId ? { turnId } : {}), ...(minSeq !== undefined ? { minSeq } : {}) };
+      const r =
+        typeof last === "number"
+          ? await timedLog(out.facts, log.eventsBefore({ last, ...(before !== undefined ? { before } : {}), ...which }, p))
+          : await timedLog(out.facts, log.events({ ...(after !== undefined ? { after } : {}), ...(typeof lim === "number" ? { limit: lim } : {}), ...(typeof tailTurns === "number" ? { tailTurns } : {}), ...which }, p));
       if (r.ok) delivered(out.facts, r.events);
       return answer(r);
     }

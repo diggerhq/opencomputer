@@ -472,6 +472,37 @@ describe("the session reads (spec 37.1)", () => {
     expect(reset.body.error).toMatchObject({ code: "reset", cursor: "e1.3.99", seq: 99 });
   });
 
+  it("events: last reads the end and before reads back, through eventsBefore; the answer carries both cursors", async () => {
+    const page = { ok: true, events: [event(4), event(5)], lastSeq: 9, cursor: "e1.2.5", prevCursor: "e1.2.3", hasMoreBefore: true };
+    const log = { events: vi.fn(), eventsBefore: vi.fn(async () => page) };
+    const { call } = setup({ log });
+    const end = await call("GET", `/sessions/${SID}/events?last=2`);
+    expect(end.status).toBe(200);
+    expect(end.body).toMatchObject({ events: [{ seq: 4 }, { seq: 5 }], lastSeq: 9, cursor: "e1.2.5", prevCursor: "e1.2.3", hasMoreBefore: true });
+    expect(log.eventsBefore).toHaveBeenLastCalledWith({ last: 2 }, expect.objectContaining({ subject: MEMBER }));
+    await call("GET", `/sessions/${SID}/events?last=500&before=e1.2.5&types=tool.*`);
+    expect(log.eventsBefore).toHaveBeenLastCalledWith({ last: 500, before: "e1.2.5", types: ["tool.*"] }, expect.anything());
+    expect(log.events).not.toHaveBeenCalled();
+  });
+
+  it("events: last is 1 to 500 and excludes after, limit and tailTurns; before needs last and a readable cursor", async () => {
+    const log = { events: vi.fn(), eventsBefore: vi.fn(async () => ({ ok: false, error: "reset", cursor: "e1.3.99", seq: 99 })) };
+    const { call } = setup({ log });
+    for (const q of ["last=0", "last=501", "last=x", "last=5&after=e1.2.4", "last=5&limit=10", "last=5&tailTurns=1"]) {
+      const r = await call("GET", `/sessions/${SID}/events?${q}`);
+      expect([q, r.status, r.body.error.code, r.body.error.field]).toEqual([q, 400, "invalid_request", "last"]);
+    }
+    const alone = await call("GET", `/sessions/${SID}/events?before=e1.2.5`);
+    expect([alone.status, alone.body.error.field]).toEqual([400, "before"]);
+    const bare = await call("GET", `/sessions/${SID}/events?last=5&before=12`);
+    expect(bare.status).toBe(409);
+    expect(bare.body.error).toMatchObject({ code: "reset", cursor: null });
+    expect(log.eventsBefore).not.toHaveBeenCalled();
+    const reset = await call("GET", `/sessions/${SID}/events?last=5&before=e1.2.120`);
+    expect(reset.status).toBe(409);
+    expect(reset.body.error).toMatchObject({ code: "reset", cursor: "e1.3.99", seq: 99 });
+  });
+
   it("events: a session the caller may not read is session_not_found, the code GET /sessions/{id} answers", async () => {
     const log = { events: vi.fn(async () => ({ ok: false, error: "not_found" })), turn: vi.fn(async () => ({ ok: false, error: "not_found" })) };
     const { call } = setup({ log });
