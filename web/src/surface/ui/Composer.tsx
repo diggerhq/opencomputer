@@ -78,7 +78,7 @@ export function Composer({
     <div
       className={cn(
         // Always a column: the paperclip's row is under the text.
-        'bg-card focus-within:border-input flex flex-none flex-col gap-1 rounded-xl border p-1.5 shadow-sm transition-colors',
+        'bg-card focus-within:border-input flex flex-none flex-col gap-1 rounded-xl border p-1.5 shadow-raised transition-[border-color,box-shadow] duration-150',
         over > 0 && 'border-ring ring-ring/30 ring-3',
         className,
       )}
