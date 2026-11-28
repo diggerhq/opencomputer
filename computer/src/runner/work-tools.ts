@@ -99,7 +99,7 @@ export function workTools(w: Work): CalvinTool[] {
     ),
     tool(
       'need_you',
-      'Say this thread cannot go on without the person: `what` they must decide or do, in one line. It clears when they answer.',
+      'Say this thread cannot go on without the person: `what` they must decide or do, in one line. Call it before you end a turn that asks them to approve, choose or answer (a spec or plan to approve, a question): nothing else marks the thread, and a question left in your reply goes unseen in the list. It clears when they answer.',
       { what: z.string().min(1).max(500).describe('One line: what you need from the person') },
       ({ what }, call) =>
         answer('not marked', async () => {

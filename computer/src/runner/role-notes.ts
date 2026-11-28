@@ -4,7 +4,8 @@
 // session, so the text goes in front of the first message a harness is sent.
 //
 // Invariants: a Slack session gets nothing (its prompt is system-prompt.ts);
-// the note is never part of what the event log records as the message.
+// the note is never part of what the event log records as the message; Session
+// sends it again after a compaction, which may summarise it away.
 
 import type { Work } from './work.js';
 
@@ -14,8 +15,9 @@ marked done, brought back or undid, you do not change again without asking. Neve
 or hide what is blocked, ready or unread. Say what you did in one line, where it happened; do not narrate the tools.`;
 
 export const APP_NOTE = `[About this session: you are a thread in the person's list of work, read in the app, not in Slack; nobody sees a
-terminal. The thread is named for you from its task. When your work is ready
-for the person, call mark_ready; when you cannot go on without them, call need_you with the one question. File what you
+terminal. The thread is named for you from its task. The list shows a thread needs the person only when you say so, so
+end every turn that waits on them with a mark: need_you when it asks them to approve, choose or answer before you go on
+(a spec or plan to approve counts), mark_ready when it gives them something to look at; neither when it only answered. File what you
 produce (a pull request, a document, a file) with add_result, and write the summary of a change for review with
 review_summary. If the message asks for more than one piece of work, track_this wraps this thread in a track; in a track,
 tell_track passes on what the track should know. ${SHARED}]`;
