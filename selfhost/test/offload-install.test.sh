@@ -110,6 +110,11 @@ for u in opencomputer-offload.service opencomputer-offload-reap.service opencomp
   check "enable: $u filled" "" "$(grep -v '^#' "$f" | grep -o '@[A-Z_]*@')"
 done
 check_has "enable: service runs as oc-offload" "User=oc-offload" "$(cat "$OC_ROOT/etc/systemd/system/opencomputer-offload.service")"
+UNIT="$(grep -v '^#' "$OC_ROOT/etc/systemd/system/opencomputer-offload.service")"
+check_lacks "enable: no RuntimeDirectory (systemd re-applies it before each Exec*)" "RuntimeDirectory" "$UNIT"
+check_has "enable: socket dir oc-offload:sp-host 2750" "ExecStartPre=+/usr/bin/install -d -o oc-offload -g sp-host -m 2750 /run/opencomputer-offload" "$UNIT"
+check_has "enable: socket dir writable under ProtectSystem" "ReadWritePaths=/run/opencomputer-offload" "$UNIT"
+check_has "enable: socket removed on stop" "ExecStopPost=+/bin/rm -f /run/opencomputer-offload/control.sock" "$UNIT"
 check_has "enable: service condition on marker" "ConditionPathExists=$OC_ROOT/etc/opencomputer/offload.enabled" "$(cat "$OC_ROOT/etc/systemd/system/opencomputer-offload.service")"
 check "enable: exception started before the service" "opencomputer-offload-imds.service opencomputer-offload-reap.timer opencomputer-offload.service" \
   "$(sed -n 's/^systemctl restart //p' "$T/calls" | tr '\n' ' ' | sed 's/ $//')"
