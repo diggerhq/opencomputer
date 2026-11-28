@@ -5,7 +5,12 @@ import {
   countdownText,
   planPricing,
   promoApplies,
+  promoBannerKey,
+  promoHref,
   promoIntentPath,
+  promoOfferText,
+  promoSpotsText,
+  promoWelcomeKey,
   promoMonths,
   promoTermText,
   promoUnavailableText,
@@ -130,5 +135,30 @@ describe('bfcm promo', () => {
     // A plain plan link keeps landing in the product.
     expect(promoIntentPath(new URLSearchParams('plan=pro'))).toBeNull()
     expect(promoIntentPath(new URLSearchParams('promo=other'))).toBeNull()
+  })
+
+  it('words the in-app prompts', () => {
+    expect(promoOfferText(promo())).toBe(
+      'Pro $10/mo, Max $100/mo, double the minutes',
+    )
+    expect(promoSpotsText(promo())).toBe('37 of 50 twelve-month spots left')
+    expect(promoSpotsText(promo({ earlyLeft: 0 }))).toBe(
+      'Locked in for 3 months',
+    )
+  })
+
+  it('links the prompts to Billing with the deal', () => {
+    expect(promoHref()).toBe('/billing?promo=bfcm2026#plans')
+    expect(promoHref('max')).toBe('/billing?plan=max&promo=bfcm2026#plans')
+    expect(promoHref('pro', 'warning')).toBe(
+      '/billing?plan=pro&promo=bfcm2026&from=warning#plans',
+    )
+  })
+
+  it('keys the banner by day and the popup by org', () => {
+    const day = new Date(2026, 10, 28, 9).getTime()
+    expect(promoBannerKey(day)).toBe(promoBannerKey(day + 3 * 3_600_000))
+    expect(promoBannerKey(day)).not.toBe(promoBannerKey(day + 86_400_000))
+    expect(promoWelcomeKey('org_1')).not.toBe(promoWelcomeKey('org_2'))
   })
 })

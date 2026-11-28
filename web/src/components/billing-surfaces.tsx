@@ -27,6 +27,7 @@ import {
   trackWarningShown,
   warningNotice,
 } from '@/lib/billing-onramp'
+import { promoHref } from '@/lib/promo'
 import { cn } from '@/lib/utils'
 
 // The app-shell billing surfaces of serverless-agents-ws 086 ("Surfaces"):
@@ -72,12 +73,17 @@ export const BillingWarningBanner = SELFHOST
 function BillingWarningBannerImpl() {
   const location = useLocation()
   const { billing, warning } = useCreditState()
+  const promo = useBillingPromo()
   const onBilling = location.pathname.startsWith('/billing')
   useEffect(() => {
     if (warning) trackWarningShown(warning)
   }, [warning])
   if (!billingOnrampV2Enabled || !warning || !billing) return null
   const notice = warningNotice(warning, billing)
+  // A trial running out while the deal runs is the best moment to offer it.
+  const pro = promo.pricing('pro')
+  const deal =
+    promo.applies && warning.startsWith('trial_') && pro.normalPriceUsd != null
   const urgent = warning === 'payment_failed'
   return (
     <div
@@ -92,12 +98,19 @@ function BillingWarningBannerImpl() {
       <CircleAlert className="size-4 shrink-0" />
       <span>
         {notice.text}{' '}
+        {deal
+          ? `Black Friday: Pro is $${pro.priceUsd}/mo with ${formatMinutes(pro.minutes)}. `
+          : null}
         {onBilling ? null : (
           <Link
-            to={billingActionHref(notice.action, 'warning')}
+            to={
+              deal
+                ? promoHref('pro', 'warning')
+                : billingActionHref(notice.action, 'warning')
+            }
             className="font-semibold underline underline-offset-2"
           >
-            {BILLING_ACTION_LABELS[notice.action]}
+            {deal ? 'Claim the deal' : BILLING_ACTION_LABELS[notice.action]}
           </Link>
         )}
       </span>

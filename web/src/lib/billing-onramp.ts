@@ -311,6 +311,8 @@ export type UpsellSurface =
   | 'byok_gate'
   | 'billing_page'
   | 'billing_deeplink'
+  | 'promo_banner'
+  | 'promo_welcome'
 
 interface UpsellProps {
   surface: UpsellSurface

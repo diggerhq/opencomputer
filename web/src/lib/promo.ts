@@ -130,3 +130,40 @@ export function activeClaim(
   const claim = promo?.claim ?? null
   return claim && new Date(claim.endsAt).getTime() > now ? claim : null
 }
+
+// "Pro $10/mo, Max $100/mo, double the minutes"
+export function promoOfferText(promo: Pick<BillingPromo, 'plans'>): string {
+  return `Pro $${promo.plans.pro.price}/mo, Max $${promo.plans.max.price}/mo, double the minutes`
+}
+
+// "37 of 50 twelve-month spots left" / "Locked in for 3 months"
+export function promoSpotsText(
+  promo: Pick<BillingPromo, 'earlyCap' | 'earlyLeft'>,
+): string {
+  return promo.earlyLeft > 0
+    ? `${promo.earlyLeft} of ${promo.earlyCap} twelve-month spots left`
+    : 'Locked in for 3 months'
+}
+
+// Where the in-app deal prompts send people: that plan's checkout on Billing
+// with the deal carried along, or the plan picker. `from` attributes the
+// checkout like billingActionHref does.
+export function promoHref(plan?: PaidPlanId, from?: 'warning'): string {
+  const params = new URLSearchParams()
+  if (plan) params.set('plan', plan)
+  params.set('promo', BFCM_PROMO_ID)
+  if (from) params.set('from', from)
+  return `/billing?${params.toString()}#plans`
+}
+
+// The app-wide banner can be dismissed for the rest of the (local) day, so it
+// comes back once a day while the deal runs.
+export function promoBannerKey(now = Date.now()): string {
+  const d = new Date(now)
+  return `oc.promo.${BFCM_PROMO_ID}.banner.${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
+}
+
+// The welcome popup shows once per org.
+export function promoWelcomeKey(orgId: string): string {
+  return `oc.promo.${BFCM_PROMO_ID}.welcome.${orgId}`
+}
