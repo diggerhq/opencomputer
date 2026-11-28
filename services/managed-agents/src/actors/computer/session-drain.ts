@@ -12,6 +12,9 @@
 //     summary never overwrites a newer one, so `GET /sessions` never reads the log.
 //   - A journal batch is acked only once the SessionLog stored it; batches of one session are
 //     appended in arrival order (one promise chain per session).
+//   - Every spec to the host carries the row's `sdk_session_id`, the agent's conversation as the runner
+//     last reported it (durable-object.ts `report`). Whether it can be resumed is the host's and the
+//     runner's to decide; a spec without it starts a new, empty conversation.
 //   - Slack sessions are unchanged for users: they get a `cs_` id lazily on delivery, their
 //     title/mode/model stay the Slack path's.
 
@@ -103,13 +106,15 @@ export interface ApiRow {
   activeTurnId: string | null;
   /** The session's role (`RoleSpec` as JSON), from `start`. */
   role: string | null;
+  /** The agent's conversation id, as the runner last reported it: a runner started without it begins a new, empty conversation. */
+  sdkSessionId: string | null;
 }
 
 const ROW_SELECT = `SELECT runner_key AS key, session_id AS sessionId, team_id AS teamId, channel_id AS channelId,
   thread_ts AS threadTs, owner_id AS ownerId, owner_user_id AS ownerUserId, owner_name AS ownerName,
   owner_email AS ownerEmail, title, mode, model, effort, speed, status, origin_type AS originType,
   origin_client AS originClient, metadata, created_at AS createdAt, updated_at AS updatedAt,
-  active_turn_id AS activeTurnId, role FROM sessions`;
+  active_turn_id AS activeTurnId, role, sdk_session_id AS sdkSessionId FROM sessions`;
 
 /**
  * Columns work 084 adds to `sessions` (lifecycle.ts's pattern: added when missing). Objects from before
@@ -248,6 +253,7 @@ export class ComputerSessionsApi {
       ...(isSpeed(row.speed) ? { speed: row.speed } : {}),
       metadata: parseMetadata(row.metadata),
       ...(row.role ? { role: JSON.parse(row.role) as CalvinRoleSpec } : {}),
+      ...(row.sdkSessionId ? { sdkSessionId: row.sdkSessionId } : {}),
     };
     if (row.originType !== "slack") {
       return {

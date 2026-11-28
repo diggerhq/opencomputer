@@ -369,6 +369,23 @@ describe("writes: every one through the inbox and the drain (spec 36.2, 36.3)", 
     expect(frames[1]).not.toHaveProperty("attachments");
   });
 
+  it("a session's runner resumes its conversation: the reported sdkSessionId rides on the frame's session", async () => {
+    const f = fixture();
+    await created(f);
+    f.answers.set("turns.send", () => ({ result: { turn: {}, delivery: "started", duplicate: false, seq: 1 } }));
+    f.logOf(SID).entries = [entry("tn_4m8q2x7c1v9b", "turn", { input: "first", ifBusy: "queue" })];
+    await f.api.drain(SID);
+    expect(f.frames("api")[0]!.session).not.toHaveProperty("sdkSessionId");
+    f.sql.exec("UPDATE sessions SET sdk_session_id = 'sdk-1' WHERE session_id = ?", SID);
+    f.logOf(SID).entries = [entry("tn_4m8q2x7c1v9c", "turn", { input: "again", ifBusy: "queue" })];
+    await f.api.drain(SID);
+    expect(f.frames("api")[1]!.session).toMatchObject({ sdkSessionId: "sdk-1" });
+    // The `start` frame too: the runner it brings up is the one that resumes.
+    await created(f);
+    await Promise.all(f.pending());
+    expect(f.frames("start").at(-1)!.session).toMatchObject({ sdkSessionId: "sdk-1" });
+  });
+
   it("a host's error keeps its code, status and fields through the drain and the inbox", async () => {
     const f = fixture();
     await created(f);
