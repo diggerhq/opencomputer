@@ -1,7 +1,16 @@
 import { useEffect, useLayoutEffect, useRef } from 'react'
 import { defaultKeymap, history, historyKeymap, insertNewline } from '@codemirror/commands'
 import { HighlightStyle, Language, defineLanguageFacet, syntaxHighlighting, syntaxTree } from '@codemirror/language'
-import { Annotation, Compartment, EditorState, RangeSetBuilder, Transaction, type Extension } from '@codemirror/state'
+import {
+  Annotation,
+  Compartment,
+  EditorSelection,
+  EditorState,
+  StateField,
+  Transaction,
+  type Extension,
+  type Range,
+} from '@codemirror/state'
 import {
   Decoration,
   EditorView,
@@ -19,8 +28,9 @@ import { cn } from '@/lib/utils'
 //
 // CodeMirror 6, like the Doc's editor: the draft stays plain markdown, byte for
 // byte, while code, emphasis and links show as they will be read. The marks
-// (backticks, asterisks, fences) stay, faint, so what is typed is what is sent
-// (Discord's way). The box grows with the text up to a share of the window,
+// (backticks, asterisks, fences) hide once the cursor leaves what they mark,
+// and come back, faint, when it returns (Obsidian's way), so what is sent can
+// always be seen and edited. The box grows with the text up to a share of the window,
 // then scrolls inside a fixed padding, so no line slides under the border.
 
 // Enter sends, except inside a code block, where it is a newline (Slack's way):
@@ -76,43 +86,121 @@ const bandTop = Decoration.line({ class: 'cm-md-fence cm-md-fence-top' })
 const bandBottom = Decoration.line({ class: 'cm-md-fence cm-md-fence-bottom' })
 const bandOnly = Decoration.line({ class: 'cm-md-fence cm-md-fence-top cm-md-fence-bottom' })
 const chip = Decoration.mark({ class: 'cm-md-code' })
+const hide = Decoration.replace({})
+// A fence line, out of the way: the whole line, not a blank one.
+const hideLine = Decoration.replace({ block: true })
 
-function decorate(view: EditorView): DecorationSet {
-  const b = new RangeSetBuilder<Decoration>()
-  const { doc } = view.state
-  for (const { from, to } of view.visibleRanges) {
-    syntaxTree(view.state).iterate({
-      from,
-      to,
-      enter: (n) => {
-        if (n.name === 'FencedCode') {
-          const first = doc.lineAt(n.from).number
-          const last = doc.lineAt(n.to).number
-          for (let l = first; l <= last; l++) {
-            const line = doc.line(l)
-            b.add(line.from, line.from, first === last ? bandOnly : l === first ? bandTop : l === last ? bandBottom : band)
-          }
-          return false
-        }
-        if (n.name === 'InlineCode') b.add(n.from, n.to, chip)
-      },
-    })
-  }
-  return b.finish()
+// The marks of each kind of span, hidden while the cursor is outside it.
+const marksOf: Record<string, string[]> = {
+  InlineCode: ['CodeMark'],
+  Emphasis: ['EmphasisMark'],
+  StrongEmphasis: ['EmphasisMark'],
+  Strikethrough: ['StrikethroughMark'],
+  // [text](url) reads as its text, underlined.
+  Link: ['LinkMark', 'URL', 'LinkTitle'],
 }
 
-const codeShapes = ViewPlugin.fromClass(
-  class {
-    decorations: DecorationSet
-    constructor(view: EditorView) {
-      this.decorations = decorate(view)
-    }
-    update(u: ViewUpdate) {
-      if (u.docChanged || u.viewportChanged || syntaxTree(u.startState) !== syntaxTree(u.state)) this.decorations = decorate(u.view)
-    }
-  },
-  { decorations: (v) => v.decorations },
-)
+function decorate(state: EditorState): DecorationSet {
+  const out: Range<Decoration>[] = []
+  const { doc, selection } = state
+  // Touching counts: with the cursor just after `code`, the backticks show.
+  const near = (from: number, to: number) => selection.ranges.some((r) => r.from <= to && r.to >= from)
+  syntaxTree(state).iterate({
+    enter: (n) => {
+      if (n.name === 'FencedCode') {
+        const top = doc.lineAt(n.from)
+        const end = doc.lineAt(n.to)
+        const marks = n.node.getChildren('CodeMark')
+        // A finished block with code in it folds its fences away; an open one,
+        // or one being edited, shows them.
+        const fold = marks.length >= 2 && end.number - top.number >= 2 && !near(top.from, end.to)
+        const first = fold ? top.number + 1 : top.number
+        const last = fold ? end.number - 1 : end.number
+        if (fold) out.push(hideLine.range(top.from, top.to), hideLine.range(end.from, end.to))
+        for (let l = first; l <= last; l++) {
+          const at = doc.line(l).from
+          out.push((first === last ? bandOnly : l === first ? bandTop : l === last ? bandBottom : band).range(at))
+        }
+        return false
+      }
+      const kinds = marksOf[n.name]
+      if (!kinds) return
+      if (n.name === 'InlineCode') out.push(chip.range(n.from, n.to))
+      if (near(n.from, n.to)) return
+      for (const k of kinds) for (const m of n.node.getChildren(k)) if (m.to > m.from) out.push(hide.range(m.from, m.to))
+    },
+  })
+  return Decoration.set(out, true)
+}
+
+// A field, not a plugin: hiding a fence takes its whole line, which only a
+// field may do. The composer's text is short, so it is all decorated at once.
+const shapes = StateField.define<DecorationSet>({
+  create: decorate,
+  update: (d, tr) =>
+    tr.docChanged || tr.selection || syntaxTree(tr.startState) !== syntaxTree(tr.state) ? decorate(tr.state) : d,
+  provide: (f) => EditorView.decorations.from(f),
+})
+
+// ⌘B, ⌘I, ⌘E wrap the selection in a mark, or take it off again (Slack's,
+// GitHub's and Linear's keys). With nothing selected, the cursor lands between.
+const wrap = (mark: string) => (view: EditorView) => {
+  const { state } = view
+  const n = mark.length
+  view.dispatch(
+    state.changeByRange((r) =>
+      state.sliceDoc(r.from - n, r.from) === mark && state.sliceDoc(r.to, r.to + n) === mark
+        ? {
+            changes: [
+              { from: r.from - n, to: r.from },
+              { from: r.to, to: r.to + n },
+            ],
+            range: EditorSelection.range(r.from - n, r.to - n),
+          }
+        : {
+            changes: [
+              { from: r.from, insert: mark },
+              { from: r.to, insert: mark },
+            ],
+            range: EditorSelection.range(r.from + n, r.to + n),
+          },
+    ),
+    { scrollIntoView: true, userEvent: 'input' },
+  )
+  return true
+}
+
+// A link pasted over selected text links that text (Slack's and GitHub's way).
+const url = /^https?:\/\/\S+$/
+function pasteLink(view: EditorView, text: string): boolean {
+  const { state } = view
+  const r = state.selection.main
+  if (state.selection.ranges.length > 1 || r.empty || !url.test(text)) return false
+  const label = state.sliceDoc(r.from, r.to)
+  if (label.includes('\n') || url.test(label)) return false
+  const link = `[${label}](${text})`
+  view.dispatch({
+    changes: { from: r.from, to: r.to, insert: link },
+    selection: { anchor: r.from + link.length },
+    userEvent: 'input.paste',
+  })
+  return true
+}
+
+// The third backtick at the start of a line opens a block and closes it below,
+// with the cursor after the fence for a language, then Enter (Slack's way).
+const closeFence = EditorView.inputHandler.of((view, from, to, text) => {
+  if (text !== '`' || from !== to || inCodeBlock(view.state)) return false
+  const line = view.state.doc.lineAt(from)
+  const lead = /^(\s*)``$/.exec(line.text.slice(0, from - line.from))
+  if (!lead || line.to !== to) return false
+  view.dispatch({
+    changes: { from, insert: `\`\n${lead[1]}\`\`\`` },
+    selection: { anchor: from + 1 },
+    userEvent: 'input.type',
+  })
+  return true
+})
 
 // When the text scrolls, the edge it runs past fades: a cut line reads as more
 // above or below, not as a glitch.
@@ -230,6 +318,9 @@ export function MarkdownInput({
       // Enter is bound ahead of the defaults so it sends; CodeMirror never runs
       // keys mid-composition, so CJK and accents are not cut off.
       keymap.of([
+        { key: 'Mod-b', run: wrap('**') },
+        { key: 'Mod-i', run: wrap('_') },
+        { key: 'Mod-e', run: wrap('`') },
         { key: 'Enter', run: (v) => (inCodeBlock(v.state) ? insertNewline(v) : send(false)()) },
         // Either ⌘ or Ctrl, on any platform, as the textarea took it.
         { key: 'Meta-Enter', run: send(true) },
@@ -241,7 +332,8 @@ export function MarkdownInput({
       ]),
       md,
       syntaxHighlighting(looks),
-      codeShapes,
+      shapes,
+      closeFence,
       edges,
       theme,
       EditorView.lineWrapping,
@@ -257,9 +349,10 @@ export function MarkdownInput({
       }),
       EditorView.domEventHandlers({
         // Files become attachments; CodeMirror would read a dropped file in as text.
-        paste: (e) => {
+        paste: (e, view) => {
           const files = [...(e.clipboardData?.files ?? [])]
-          if (!files.length || !live.current.onFiles) return false
+          if (!files.length) return pasteLink(view, e.clipboardData?.getData('text/plain').trim() ?? '')
+          if (!live.current.onFiles) return false
           e.preventDefault()
           live.current.onFiles(files)
           return true
