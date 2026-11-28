@@ -148,11 +148,11 @@ describe('the composer', () => {
     })
     expect(surface.attach).toHaveBeenLastCalledWith('t:cs_1', [file])
 
-    const textarea = el.querySelector('textarea')!
+    const text = el.querySelector<HTMLElement>('[data-draft="t:cs_1"]')!
     act(() => {
       const paste = new Event('paste', { bubbles: true, cancelable: true })
       Object.defineProperty(paste, 'clipboardData', { value: { files: [file] } })
-      textarea.dispatchEvent(paste)
+      text.dispatchEvent(paste)
     })
     expect(surface.attach).toHaveBeenCalledTimes(2)
 
@@ -200,10 +200,11 @@ describe('the composer', () => {
     expect(box.hasAttribute('data-dragging')).toBe(false)
     const paste = new Event('paste', { bubbles: true, cancelable: true })
     act(() => {
-      Object.defineProperty(paste, 'clipboardData', { value: { files: [file] } })
-      el.querySelector('textarea')!.dispatchEvent(paste)
+      Object.defineProperty(paste, 'clipboardData', { value: { files: [file], getData: () => '' } })
+      el.querySelector('[data-draft="t:cs_1"]')!.dispatchEvent(paste)
     })
-    expect(paste.defaultPrevented).toBe(false)
+    // CodeMirror takes every paste as text; with no text, nothing lands.
+    expect(surface.setDraft).not.toHaveBeenCalled()
     expect(surface.attach).not.toHaveBeenCalled()
   })
 })

@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
-import { ChatTextarea } from '@/components/chat-textarea'
+import { useRef, useState, type DragEvent, type ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useS, useSurface } from '../hooks'
 import { DraftChips } from './Attachments'
 import { I } from './icons'
+import { MarkdownInput } from './MarkdownInput'
 import { Tip } from './Tip'
 
 // ---- the composer: the dashboard's chat box, whose draft is kept (R44) ----
@@ -42,14 +42,10 @@ export function Composer({
   const held = useS((s) => s.attachments.filter((a) => ids.includes(a.id)).length)
   const failed = useS((s) => s.attachments.some((a) => a.state === 'failed' && ids.includes(a.id)))
   const canAttach = useS((s) => s.canAttach !== false)
-  const ref = useRef<HTMLDivElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const meta = useRef(false)
   // A drag over the box, counted in and out through its children.
   const [over, setOver] = useState(0)
-  useEffect(() => {
-    if (autoFocus) ref.current?.querySelector('textarea')?.focus()
-  }, [autoFocus, draftKey])
   const ready = (!!text.trim() || held > 0) && !failed
   const send = () => {
     if (!ready) return
@@ -80,7 +76,6 @@ export function Composer({
   )
   return (
     <div
-      ref={ref}
       className={cn(
         // Always a column: the paperclip's row is under the text.
         'bg-card focus-within:border-input flex flex-none flex-col gap-1 rounded-xl border p-1.5 shadow-sm transition-colors',
@@ -109,26 +104,20 @@ export function Composer({
         attach(e.dataTransfer.files)
       }}
     >
-      <ChatTextarea
-        data-draft={draftKey}
+      <MarkdownInput
+        draftKey={draftKey}
         placeholder={placeholder}
         rows={rows}
+        focus={autoFocus}
         value={text}
-        onChange={(e) => surface.setDraft(draftKey, e.target.value)}
-        onSend={send}
-        onKeyDown={(e) => {
-          // Only the Enter that sends says whether ⌘ was held: a ⌘V before a
-          // click on Send must not interrupt the agent (work 134).
-          if (e.key === 'Enter') meta.current = e.metaKey || e.ctrlKey
-          if (e.key === 'Escape') e.currentTarget.blur()
+        onChange={(t) => surface.setDraft(draftKey, t)}
+        // Only the Enter that sends says whether ⌘ was held: a ⌘V before a
+        // click on Send must not interrupt the agent (work 134).
+        onSend={(e) => {
+          meta.current = e.meta
+          send()
         }}
-        onPaste={(e) => {
-          const files = [...e.clipboardData.files]
-          if (!files.length || !canAttach) return
-          e.preventDefault()
-          attach(files)
-        }}
-        className="text-reading md:text-reading placeholder:text-faint min-h-10 flex-1 border-0 bg-transparent px-2.5 py-2 shadow-none focus-visible:ring-0 dark:bg-transparent"
+        onFiles={canAttach ? attach : undefined}
       />
       <DraftChips draftKey={draftKey} ids={ids} />
       <div className="flex items-center gap-1">

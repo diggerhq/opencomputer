@@ -17,7 +17,7 @@ export function StartBox() {
         draftKey="new"
         placeholder="A question, a fix, or something bigger"
         rows={2}
-        className="w-full max-w-150 [&_textarea]:min-h-13"
+        className="w-full max-w-150"
         // The start box is its composer: New lands in it.
         // eslint-disable-next-line jsx-a11y/no-autofocus
         autoFocus
