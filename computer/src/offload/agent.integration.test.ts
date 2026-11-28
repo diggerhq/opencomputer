@@ -60,8 +60,6 @@ describe.skipIf(!existsSync(AGENT))('offload jobs with the real builder agent', 
     const aws: Aws = {
       run: async () => ({ microvmId: `mv-${++n}`, endpoint: agentUrl }),
       state: async (id) => (terminated.includes(id) ? 'TERMINATED' : 'RUNNING'),
-      tag: async () => {},
-      tags: async () => ({}),
       authToken: async () => 'tok',
       terminate: async (id) => void terminated.push(id),
       list: async () => [],

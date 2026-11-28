@@ -7,15 +7,17 @@
 //   job's minutes (at most SP_OFFLOAD_MAX_MINUTES) plus 2, and an idle policy
 //   suspends and ends one nobody talks to, so a dead service leaks nothing
 //   for long. clientToken is the job id: a retried run is the same MicroVM.
-// - RunMicrovm takes no tags: TagResource follows it, best effort (a MicroVM
-//   that could not be tagged is still the ledger's, by id).
+// - MicroVMs are not taggable (verified on AWS: TagResource on a microvm ARN
+//   fails ValidationException), so tag:GetResources never lists them. A
+//   MicroVM is ours by its image ARN and the ledger: teardown and the reaper
+//   use ListMicrovms filtered by our image ARNs.
 // - Presigned URLs live 15 minutes; the builder's upload URLs are re-signed
 //   while a job runs (jobs.ts). Auth tokens live 60 minutes, port 8080 only.
 // - Terminate of a MicroVM that is already gone is success.
 
 import {
-  CreateMicrovmAuthTokenCommand, GetMicrovmCommand, LambdaMicrovmsClient, ListMicrovmsCommand, ListTagsCommand, type MicrovmItem, type MicrovmState,
-  ResourceNotFoundException, RunMicrovmCommand, TagResourceCommand, TerminateMicrovmCommand,
+  CreateMicrovmAuthTokenCommand, GetMicrovmCommand, LambdaMicrovmsClient, ListMicrovmsCommand, type MicrovmItem, type MicrovmState,
+  ResourceNotFoundException, RunMicrovmCommand, TerminateMicrovmCommand,
 } from '@aws-sdk/client-lambda-microvms';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -40,8 +42,6 @@ export const maxDurationSeconds = (minutes: number, maxMinutes: number) => Math.
 export interface Aws {
   run(s: RunSpec): Promise<{ microvmId: string; endpoint: string }>;
   state(microvmId: string): Promise<MicrovmState | undefined>;
-  tag(microvmId: string, tags: Record<string, string>): Promise<void>;
-  tags(microvmId: string): Promise<Record<string, string>>;
   authToken(microvmId: string): Promise<string>;
   terminate(microvmId: string): Promise<void>;
   list(image: string): Promise<MicrovmItem[]>;
@@ -51,8 +51,6 @@ export interface Aws {
 
 export interface AwsDeps {
   region: string;
-  /** For MicroVM ARNs (TagResource, ListTags). */
-  accountId: string;
   bucket: string;
   /** Tests pass clients built on mocks; otherwise the default chain. */
   microvms?: LambdaMicrovmsClient;
@@ -62,7 +60,6 @@ export interface AwsDeps {
 export function aws(d: AwsDeps): Aws {
   const mv = d.microvms ?? new LambdaMicrovmsClient({ region: d.region });
   const s3 = d.s3 ?? new S3Client({ region: d.region });
-  const arn = (id: string) => `arn:aws:lambda:${d.region}:${d.accountId}:microvm:${id}`;
   const gone = (e: unknown) => e instanceof ResourceNotFoundException || (e as { name?: string })?.name === 'ResourceNotFoundException';
   return {
     async run(s) {
@@ -80,12 +77,6 @@ export function aws(d: AwsDeps): Aws {
         if (gone(e)) return 'TERMINATED';
         throw e;
       }
-    },
-    async tag(id, tags) {
-      await mv.send(new TagResourceCommand({ Resource: arn(id), Tags: tags }));
-    },
-    async tags(id) {
-      return (await mv.send(new ListTagsCommand({ Resource: arn(id) }))).Tags ?? {};
     },
     async authToken(id) {
       const r = await mv.send(new CreateMicrovmAuthTokenCommand({ microvmIdentifier: id, expirationInMinutes: TOKEN_MINUTES, allowedPorts: [{ port: AGENT_PORT }] }));

@@ -62,10 +62,10 @@ async function serve() {
   if (!notReady && det.aws) {
     const ledger = openLedger(config.stateDir);
     if (ledger.skipped) log.warn(`offload ledger: ${ledger.skipped} lines skipped`);
-    const a = aws({ region: config.region ?? det.region, accountId: det.accountId, bucket: config.bucket });
+    const a = aws({ region: config.region ?? det.region, bucket: config.bucket });
     jobs = offloadJobs({ config, aws: a, ledger, logsDir: path.join(config.stateDir, 'logs'), hostTag: det.instanceId, paused: () => existsSync(DRAIN_MARKER) });
     await jobs.recover();
-    const pass = () => reap({ aws: a, rows: () => ledger.all(), images: Object.values(config.images), hostTag: det.instanceId }).then(
+    const pass = () => reap({ aws: a, rows: () => ledger.all(), images: Object.values(config.images) }).then(
       (r) => {
         for (const t of r.terminated) log.info(`offload reaper: terminated ${t.microvmId}: ${t.why}`);
         for (const e of r.errors) log.warn(`offload reaper: ${e}`);
@@ -109,8 +109,8 @@ async function reapOnce() {
   const det = await detect();
   if (!det.aws || !det.role) return console.log(checkAwsResult(det).line), 0;
   const { rows } = readLedger(config.stateDir);
-  const a = aws({ region: config.region ?? det.region, accountId: det.accountId, bucket: config.bucket });
-  const r = await reap({ aws: a, rows: () => [...rows.values()], images: Object.values(config.images), hostTag: det.instanceId });
+  const a = aws({ region: config.region ?? det.region, bucket: config.bucket });
+  const r = await reap({ aws: a, rows: () => [...rows.values()], images: Object.values(config.images) });
   for (const t of r.terminated) console.log(`terminated ${t.microvmId}: ${t.why}`);
   for (const e of r.errors) console.error(e);
   console.log(`reaper: ${r.terminated.length} terminated, ${r.kept} kept`);

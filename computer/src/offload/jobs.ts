@@ -23,7 +23,7 @@
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { appendFileSync, closeSync, mkdirSync, openSync, readSync, statSync } from 'node:fs';
-import { type Fence, type JobState, type JobView, OFFLOAD_SIZES, type OffloadSize, TERMINAL, sameFence, sessionTag } from '../offload-protocol.js';
+import { type Fence, type JobState, type JobView, OFFLOAD_SIZES, type OffloadSize, TERMINAL, sameFence } from '../offload-protocol.js';
 import { log } from '../log.js';
 import { AGENT_TERMINAL, type Agent, type AgentStatus, agentClient } from './agent.js';
 import type { Aws } from './aws.js';
@@ -200,8 +200,6 @@ export function offloadJobs(d: JobsDeps) {
       const { microvmId, endpoint } = await aws.run({ jobId: id, image: c.images[r.size]!, imageVersion: c.imageVersion, minutes: r.minutes, maxMinutes: c.maxMinutes });
       ctl.microvmId = microvmId;
       update(id, { microvmId });
-      aws.tag(microvmId, { 'opencomputer:offload': d.hostTag, 'opencomputer:job': id, 'opencomputer:session': sessionTag(r.fence.sessionKey) })
-        .catch((e) => log.warn(`offload ${id}: MicroVM ${microvmId} not tagged: ${e?.message ?? e}`));
       let token = '';
       let tokenAt = 0;
       const agent = (ctl.agent = mkAgent(endpoint, () => token));
