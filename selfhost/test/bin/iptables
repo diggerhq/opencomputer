@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# A fake iptables/ip6tables for selfhost/test: keeps rules as text in
+# $FAKE_IPT/<iptables|ip6tables>/<chain>, one rule per line, and logs every call
+# to $FAKE_IPT/calls. Understands -N -F -X -A -I [n] -C -D -S, which is all the
+# units and host-install.sh use. Rules are compared as the words given.
+set -u
+t="$(basename "$0")" d="$FAKE_IPT/$(basename "$0")"
+mkdir -p "$d"; [[ -f $d/OUTPUT ]] || : >"$d/OUTPUT"
+echo "$t $*" >>"$FAKE_IPT/calls"
+op="$1" chain="${2:-}"; shift 2 2>/dev/null || shift $#
+f="$d/$chain"
+case $op in
+  -N) [[ ! -f $f ]] || { echo "$t: Chain already exists." >&2; exit 1; }; : >"$f" ;;
+  -F) [[ -f $f ]] || exit 1; : >"$f" ;;
+  -X) [[ -f $f && ! -s $f ]] || exit 1
+      ! grep -qs -- "-j $chain\$" "$d"/* || { echo "$t: chain in use" >&2; exit 1; }
+      rm -f "$f" ;;
+  -A) [[ -f $f ]] || exit 1; echo "$*" >>"$f" ;;
+  -I) [[ -f $f ]] || exit 1; n=1
+      if [[ ${1:-} =~ ^[0-9]+$ ]]; then n=$1; shift; fi
+      { head -n $((n - 1)) "$f"; echo "$*"; tail -n +"$n" "$f"; } >"$f.new"; mv "$f.new" "$f" ;;
+  -C) [[ -f $f ]] && grep -qxF -- "$*" "$f" ;;
+  -D) [[ -f $f ]] || exit 1; n="$(grep -nxF -- "$*" "$f" | head -1 | cut -d: -f1)"
+      [[ -n $n ]] || { echo "$t: Bad rule" >&2; exit 1; }; sed -i "${n}d" "$f" ;;
+  -S) if [[ -n $chain ]]; then [[ -f $f ]] || exit 1; sed "s|^|-A $chain |" "$f"
+      else for f in "$d"/*; do sed "s|^|-A $(basename "$f") |" "$f"; done; fi ;;
+  *) echo "$t: fake does not know $op" >&2; exit 2 ;;
+esac
