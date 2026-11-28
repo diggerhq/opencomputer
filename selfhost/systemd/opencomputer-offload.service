@@ -1,0 +1,60 @@
+# Template: selfhost/host-install.sh --enable-offload fills the @NAMES@ in and
+# writes the result to /etc/systemd/system/opencomputer-offload.service, only
+# on an EC2 instance with a role (selfhost/lib/aws-detect.sh). The service
+# (computer/src/offload/main.ts) runs builds on AWS Lambda MicroVMs with the
+# instance role's credentials, which only it can reach
+# (opencomputer-offload-imds.service). Plan: work/136.
+#
+# Fails closed twice: without the marker the unit is skipped, and
+# `main.ts check-aws` (exit 0 only on EC2 with a role) must pass to start.
+#
+# The control socket, /run/opencomputer-offload/control.sock, is for the host
+# agent (sp-host). oc-offload is in no group but its own: the first
+# ExecStartPre (+, as root) gives the runtime directory group sp-host and the
+# setgid bit, so the socket the daemon makes there is group sp-host, and
+# UMask=0007 makes it 0660. sp-host may enter the directory; nobody else may.
+# No SupplementaryGroups=sp-host: the service's chown of the directory and the
+# socket to sp-host's gid (control.ts) is a no-op chown it is allowed as their
+# owner, so the one process holding the role's credentials stays out of the
+# host's group.
+[Unit]
+Description=OpenComputer build offload (AWS Lambda MicroVMs)
+Wants=network-online.target
+After=network-online.target opencomputer-imds-deny.service opencomputer-offload-imds.service
+Requires=opencomputer-offload-imds.service
+ConditionPathExists=@SELFHOST_ETC@/offload.enabled
+
+[Service]
+Type=simple
+User=oc-offload
+Group=oc-offload
+WorkingDirectory=@SP_CURRENT@
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=NODE_ENV=production
+Environment=AWS_EC2_METADATA_V1_DISABLED=true
+EnvironmentFile=@SELFHOST_ENV@
+RuntimeDirectory=opencomputer-offload
+RuntimeDirectoryMode=0750
+StateDirectory=opencomputer-offload
+StateDirectoryMode=0700
+UMask=0007
+ExecStartPre=+/bin/sh -c 'chgrp @HOST_USER@ /run/opencomputer-offload && chmod 2750 /run/opencomputer-offload'
+ExecStartPre=@SP_CURRENT@/node_modules/.bin/tsx src/offload/main.ts check-aws
+ExecStart=@SP_CURRENT@/node_modules/.bin/tsx src/offload/main.ts serve
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+KillMode=mixed
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
