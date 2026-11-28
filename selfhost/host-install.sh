@@ -7,7 +7,8 @@
 # no client relay, no operator CLIs (Claude Code, gh, codex, playwright).
 # The contract with the gateway container is selfhost/CONTRACT.md.
 #
-#   sudo selfhost/host-install.sh [--build-image]   install, or update to this checkout
+#   sudo selfhost/host-install.sh [--build-image] [--build-gateway]
+#                                                   install, or update to this checkout
 #   sudo selfhost/host-install.sh --dry-run         check this machine and print the plan; changes nothing
 #   sudo selfhost/host-install.sh --link-gateway    point the host at the running gateway container (its
 #                                                   URL, organization and /data/host-token) and (re)start it
@@ -40,9 +41,15 @@
 #     podman-compose in /opt/podman-compose (Ubuntu's 1.0.6 ignores compose
 #     profiles) and user oc-gateway (home /var/lib/oc-gateway, rootless Podman,
 #     lingering, podman-restart.service), so the stack runs apart from the
-#     sessions and comes back after a reboot; this checkout's selfhost/ (and
-#     services/managed-agents, the gateway's build context) copied to
+#     sessions and comes back after a reboot; this checkout's selfhost/ copied to
 #     /var/lib/oc-gateway/selfhost, refreshed on every install; .env is kept
+#   - the gateway image, pulled as oc-gateway and pinned in that compose.yaml:
+#     ghcr.io/diggerhq/computer-gateway:<selfhost/gateway/source-tag.sh>, the
+#     image CI built from this checkout's gateway source. Not published (a
+#     branch's own changes, or before CI has run): this fails and names the
+#     fallback, --build-gateway, which builds it here as oc-gateway from a copy
+#     of the build context in ~oc-gateway/gateway-src (20-30 minutes on a small VM). GATEWAY_IMAGE in
+#     the stack's .env overrides the pin; then that image is pulled instead.
 #
 # Inputs (environment):
 #   SP_IMAGE        a session image to run instead of the one this checkout names,
@@ -93,7 +100,7 @@ die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 usage() { sed -n '/^#   sudo/,/^#$/p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
-MODE=install DRY_RUN=0 BUILD_IMAGE=0 PURGE=0
+MODE=install DRY_RUN=0 BUILD_IMAGE=0 BUILD_GATEWAY=0 PURGE=0
 OFFLOAD_BUCKET="" OFFLOAD_IMAGE_S="" OFFLOAD_IMAGE_M="" OFFLOAD_REGION="" OFFLOAD_FLAGS=0
 ARGS=("$@")
 while (($#)); do
@@ -101,6 +108,7 @@ while (($#)); do
   case $arg in
     --dry-run) DRY_RUN=1 ;;
     --build-image) BUILD_IMAGE=1 ;;
+    --build-gateway) BUILD_GATEWAY=1 ;;
     --uninstall) MODE=uninstall ;;
     --link-gateway) MODE=link ;;
     --purge) PURGE=1 ;;
@@ -145,8 +153,11 @@ GO_SERIES="${GO_SERIES:-1.27}"
 NODE_MAJOR="${NODE_MAJOR:-24}"
 GATEWAY_USER="${GATEWAY_USER:-oc-gateway}"
 GATEWAY_HOME_DEFAULT=/var/lib/oc-gateway
-# The stack's copy, from this checkout into $GATEWAY_HOME: compose.yaml builds from its parent (context: ..).
-GATEWAY_STACK_PATHS=(selfhost/compose.yaml selfhost/.env.example selfhost/gateway selfhost/systemd services/managed-agents)
+# The stack's copy, from this checkout into $GATEWAY_HOME.
+GATEWAY_STACK_PATHS=(selfhost/compose.yaml selfhost/.env.example selfhost/gateway selfhost/systemd)
+# --build-gateway: selfhost/gateway/Dockerfile's context, source-tag.sh's GATEWAY_SOURCE.
+GATEWAY_BUILD_PATHS=(selfhost/gateway services/managed-agents cloudflare-workers/api-edge cloudflare-workers/shared web sdks/typescript/src/computer)
+GATEWAY_REPOSITORY=ghcr.io/diggerhq/computer-gateway
 GATEWAY_NETWORKS="/srv/$GATEWAY_USER/networks"   # its Podman networks: not under /var/lib (gateway_user)
 PODMAN_COMPOSE_VERSION="${PODMAN_COMPOSE_VERSION:-1.6.0}"
 PODMAN_COMPOSE_MIN=1.1.0
@@ -317,6 +328,46 @@ resolve_image() {
   [[ $ABI =~ ^[0-9]+$ ]] || die "computer/deploy/image/ABI is not an integer"
 }
 
+# published <repository> <tag>: 0 when the registry has it, 1 when it says it
+# has not (ghcr.io denies a package that does not exist or is not public), 2
+# when it could not tell. Anonymous, as a VM without credentials pulls.
+published() {
+  local registry="${1%%/*}" name="${1#*/}" reply token code
+  reply="$(curl -sS -m 30 --retry 3 "https://$registry/token?scope=repository:$name:pull" 2>/dev/null)" || return 2
+  token="$(sed -n 's/.*"token": *"\([^"]*\)".*/\1/p' <<<"$reply")"
+  if [[ -z $token ]]; then grep -q DENIED <<<"$reply" && return 1; return 2; fi
+  code="$(curl -sS -m 30 --retry 3 -o /dev/null -w '%{http_code}' -I \
+    -H @<(printf 'Authorization: Bearer %s\nAccept: %s\n' "$token" 'application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json') \
+    "https://$registry/v2/$name/manifests/$2" 2>/dev/null)" || return 2
+  case $code in 200) return 0 ;; 404) return 1 ;; *) return 2 ;; esac
+}
+
+# Which gateway image: the pin compose.yaml gets (CI's image of this checkout's
+# gateway source, or with --build-gateway a local build of it), and the one
+# the stack will run (GATEWAY_IMAGE in its .env, when set, else the pin).
+resolve_gateway_image() {
+  local tag env_file="$GATEWAY_HOME/selfhost/.env" rc=0
+  tag="$(bash "$REPO_ROOT/selfhost/gateway/source-tag.sh" HEAD)" || die "selfhost/gateway/source-tag.sh failed"
+  if [[ $BUILD_GATEWAY == 1 ]]; then
+    GATEWAY_PIN="localhost/computer-gateway:$tag" GATEWAY_HOW="built here from selfhost/gateway/Dockerfile (--build-gateway)"
+  else
+    GATEWAY_PIN="$GATEWAY_REPOSITORY:$tag" GATEWAY_HOW="pulled: CI's image of this checkout's gateway source"
+  fi
+  GATEWAY_RUN="$(sed -n 's/^[[:space:]]*GATEWAY_IMAGE=//p' "$env_file" 2>/dev/null | tail -1 | tr -d "\"'[:space:]" || true)"
+  if [[ -n $GATEWAY_RUN ]]; then
+    GATEWAY_HOW="GATEWAY_IMAGE in $env_file, pulled; compose.yaml's default stays $GATEWAY_PIN"
+    return 0
+  fi
+  GATEWAY_RUN="$GATEWAY_PIN"
+  [[ $BUILD_GATEWAY == 0 ]] || return 0
+  published "$GATEWAY_REPOSITORY" "$tag" || rc=$?
+  case $rc in
+    0) echo "gateway image: $GATEWAY_PIN" ;;
+    1) die "$GATEWAY_PIN is not published (or its package is not public): CI (.github/workflows/gateway-image.yml) builds it on main once this gateway source is merged. Build it here instead with --build-gateway (20-30 minutes), or set GATEWAY_IMAGE in $env_file" ;;
+    *) warn "could not check $GATEWAY_PIN in the registry anonymously; the install pulls it and fails if it cannot (fallback: --build-gateway)" ;;
+  esac
+}
+
 plan() {
   cat <<EOF
 
@@ -337,6 +388,7 @@ Plan (nothing below has run):
      $UNIT (EnvironmentFile=$SELFHOST_ENV)
   9. user $HOST_USER, sudoers, SP_LAUNCH=podman (computer/deploy/vm/sp-host.sh new + apply)
      $GATEWAY_USER: lingering, podman-restart.service enabled (starts restart: always containers at boot)
+     gateway image $GATEWAY_RUN ($GATEWAY_HOW)
  10. $( [[ -n "$(env_value SP_HOST_TOKEN)" ]] && echo "start $UNIT ($SELFHOST_ENV has a token)" || echo "$UNIT installed, NOT started: $SELFHOST_ENV has no SP_HOST_TOKEN yet" )
  11. build offload: $(offload_plan_line)
 Not installed: Docker, cloudflared, Claude Code CLI, gh, codex, playwright, a self-update timer.
@@ -347,17 +399,24 @@ EOF
 # ------------------------------------------------------------------ install steps
 
 # The stack's files, from this checkout's HEAD (git archive: no node_modules or
-# local edits) into $GATEWAY_HOME, owned by $GATEWAY_USER. Each run replaces
-# them; selfhost/.env is not in the archive and stays.
+# local edits) into $GATEWAY_HOME, owned by $GATEWAY_USER, with the gateway
+# image pinned in compose.yaml. Each run replaces them; selfhost/.env is not in
+# the archive and stays.
 gateway_stack() {
   log "compose stack -> $GATEWAY_HOME/selfhost"
-  local p paths=() group; group="$(id -gn "$GATEWAY_USER")"
+  local p paths=() group compose="$GATEWAY_HOME/selfhost/compose.yaml"
+  group="$(id -gn "$GATEWAY_USER")"
   for p in "${GATEWAY_STACK_PATHS[@]}"; do
     if rgit cat-file -e "HEAD:$p" 2>/dev/null; then paths+=("$p"); else echo "warning: $p is not in this checkout; skipped"; fi
   done
   [[ ${#paths[@]} -gt 0 ]] || { echo "warning: no compose stack in this checkout"; return 0; }
   for p in "${paths[@]}"; do [[ $p == */.env.example || $p == */compose.yaml ]] || rm -rf "${GATEWAY_HOME:?}/$p"; done
   rgit archive --format=tar HEAD "${paths[@]}" | tar -x -C "$GATEWAY_HOME" --no-same-owner
+  if [[ -f $compose ]]; then
+    sed -i "s|\${GATEWAY_IMAGE:?[^}]*}|\${GATEWAY_IMAGE:-$GATEWAY_PIN}|" "$compose"
+    grep -qF "\${GATEWAY_IMAGE:-$GATEWAY_PIN}" "$compose" || die "could not pin the gateway image in $compose"
+    echo "compose.yaml: gateway image $GATEWAY_PIN"
+  fi
   for p in selfhost services; do [[ ! -d $GATEWAY_HOME/$p ]] || chown -R "$GATEWAY_USER:$group" "$GATEWAY_HOME/$p"; done
   chmod 0750 "$GATEWAY_HOME/selfhost"
   [[ ! -f $GATEWAY_HOME/selfhost/.env ]] || chmod 0600 "$GATEWAY_HOME/selfhost/.env"
@@ -490,6 +549,26 @@ log_size_max = 52428800
 [network]
 network_config_dir = "$GATEWAY_NETWORKS"
 EOF
+  fi
+}
+
+# The gateway image in $GATEWAY_USER's storage, so the stack's first start
+# takes seconds: pulled, or with --build-gateway built from a copy of its
+# context (this checkout's HEAD, removed after). Never started here. An image
+# already present is kept (a src- tag names its source).
+gateway_image() {
+  log "gateway image $GATEWAY_RUN"
+  if as_gateway podman image exists "$GATEWAY_RUN"; then echo "present"; return 0; fi
+  if [[ $BUILD_GATEWAY == 1 && $GATEWAY_RUN == "$GATEWAY_PIN" ]]; then
+    local src="$GATEWAY_HOME/gateway-src"
+    rm -rf "$src" && install -d -m 0750 -o "$GATEWAY_USER" -g "$(id -gn "$GATEWAY_USER")" "$src"
+    rgit archive --format=tar HEAD "${GATEWAY_BUILD_PATHS[@]}" | runuser -u "$GATEWAY_USER" -- tar -x -C "$src"
+    as_gateway podman build -f "$src/selfhost/gateway/Dockerfile" -t "$GATEWAY_RUN" "$src" \
+      || die "building the gateway image as $GATEWAY_USER failed (its context: $src)"
+    rm -rf "$src"
+  else
+    as_gateway podman pull "$GATEWAY_RUN" \
+      || die "could not pull $GATEWAY_RUN as $GATEWAY_USER; build it here instead with --build-gateway (20-30 minutes)"
   fi
 }
 
@@ -696,6 +775,7 @@ start_host() {
 install_all() {
   preflight
   resolve_image
+  resolve_gateway_image
   if [[ $DRY_RUN == 1 ]]; then plan; exit 0; fi
   install_lock
   cd /
@@ -713,10 +793,11 @@ install_all() {
   units
   host_user
   gateway_units
+  gateway_image
   start_host
   offload_upgrade
-  log "done: release $SHA, image $IMAGE, $(node --version), podman $(dpkg-query -W -f='${Version}' podman), podman-compose $PODMAN_COMPOSE_VERSION"
-  echo "The compose stack is $GATEWAY_USER's, in $GATEWAY_HOME/selfhost: as $GATEWAY_USER, cp .env.example .env, fill it in, start it (docs/self-hosting/single-vm.mdx); then sudo $0 --link-gateway"
+  log "done: release $SHA, image $IMAGE, gateway image $GATEWAY_RUN, $(node --version), podman $(dpkg-query -W -f='${Version}' podman), podman-compose $PODMAN_COMPOSE_VERSION"
+  echo "The compose stack is $GATEWAY_USER's, in $GATEWAY_HOME/selfhost: as $GATEWAY_USER, cp .env.example .env, fill it in, start it (docs/self-hosting/single-vm.mdx), or restart it to run a new gateway image; then sudo $0 --link-gateway"
 }
 
 # --link-gateway: points the host at the gateway container that $GATEWAY_USER runs. As
