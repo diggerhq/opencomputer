@@ -99,17 +99,20 @@ grep -qx "ARG SESSION_IMAGE=$SESSION_IMAGE" "$STAGE/Dockerfile" || die "could no
 cp "$BUILDER/agent.mjs" "$STAGE/agent.mjs"
 HASH="$(cat "$STAGE/Dockerfile" "$STAGE/agent.mjs" | sha256sum | cut -c1-16)"
 ZIP="$STAGE/$HASH.zip"
-touch -d @315532800 "$STAGE/Dockerfile" "$STAGE/agent.mjs"   # 1980-01-01: same bytes, same zip
+# A fixed mtime, so the same files make the same zip. Zip stores local time and
+# nothing before 1980: 1980-01-02 UTC (not 01-01) is still 1980 in every zone,
+# and the zip runs with TZ=UTC so its bytes do not depend on the box's zone.
+touch -d @315619200 "$STAGE/Dockerfile" "$STAGE/agent.mjs"
 # VERIFY: the service expects the Dockerfile at the zip's root (the spike's layout).
 if command -v zip >/dev/null; then
-  (cd "$STAGE" && zip -X -q "$ZIP" Dockerfile agent.mjs)
+  (cd "$STAGE" && TZ=UTC zip -X -q "$ZIP" Dockerfile agent.mjs)
 else
-  python3 -I -c 'import sys, zipfile
+  TZ=UTC python3 -I -c 'import sys, zipfile
 with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
     for p in sys.argv[2:]: z.write(p, p.rsplit("/", 1)[-1])' "$ZIP" "$STAGE/Dockerfile" "$STAGE/agent.mjs"
 fi
 URI="s3://$BUCKET/images/$HASH.zip"   # VERIFY: codeArtifact.uri takes the s3:// form
-log "builder $HASH (session image ${SESSION_IMAGE##*@}, ABI $ABI)"
+log "builder $HASH (session image ${SESSION_IMAGE##*@}, ABI $ABI, zip sha256 $(sha256sum "$ZIP" | cut -c1-16))"
 
 log "upload $URI"
 aws_q s3 cp "$ZIP" "$URI" --only-show-errors
