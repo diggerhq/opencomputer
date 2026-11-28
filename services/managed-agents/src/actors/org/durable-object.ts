@@ -15,7 +15,7 @@ import { platformPrincipal, type Access, type Principal } from "../../auth/princ
 import { sqlOf, type Sql } from "../../durable/sql.js";
 import { unavailable } from "../../durable/unavailable.js";
 import { type ComputerRpc, type StartSpec } from "../computer/contract.js";
-import { type CreateSession, type DocRev, type FeedFrame, type GrantingInstallation, type RepositoriesQuery, type Repository, type RepositoryChoice, type ListQuery, type MachinePub, type MutateReply, type MutateRequest, type Occurrence, type OrgRpc, type OrgSettings, type Overview, type PlaceRow, type PullPub, type ResultRow, type ReviewRow, type Row, type SessionPage, type SessionPatch, type SessionRow, type SlackAccessDefault, type SummaryPub } from "./contract.js";
+import { type Attachment, type AttachmentMeta, type AttachmentSpec, type CreateSession, type DocRev, type FeedFrame, type GrantingInstallation, type RepositoriesQuery, type Repository, type RepositoryChoice, type ListQuery, type MachinePub, type MutateReply, type MutateRequest, type Occurrence, type OrgRpc, type OrgSettings, type Overview, type PlaceRow, type PullPub, type ResultRow, type ReviewRow, type Row, type SessionPage, type SessionPatch, type SessionRow, type SlackAccessDefault, type SummaryPub } from "./contract.js";
 import { type LiveRpc } from "../live/contract.js";
 import { type Reply } from "../../durable/rpc-reply.js";
 import { type SessionLogRpc } from "../session-log/contract.js";
@@ -28,11 +28,13 @@ import type { Fetch, StoredRepository, TokenMinter } from "./repository.js";
 import { completeFolded, STEPS } from "./schema.js";
 import * as sessions from "./sessions.js";
 import { accessOf } from "./access.js";
+import * as attachments from "./attachments.js";
+import { attachmentKey, attachmentPrefix, attachmentsOf, type Attachments, type AttachmentsEnv } from "../../attachments/store.js";
 import { readSession, trackOfAgent } from "./records.js";
 import type { PublishOwed } from "./tx.js";
 import * as work from "./work.js";
 
-export type OrgEnv = ActorEnv & TelemetryEnv & {
+export type OrgEnv = ActorEnv & TelemetryEnv & AttachmentsEnv & {
   SERVERLESS_AGENTS_DB?: D1Database;
   /** The edge's AccountDurableObject, addressed by the organization's id: GitHub tokens. */
   ACCOUNTS?: DurableObjectNamespace;
@@ -64,6 +66,8 @@ export interface OrgOut {
   boardRepository(): Promise<StoredRepository | null>;
   /** The organization's Account object, or null where it is not bound. */
   account(): TokenMinter | null;
+  /** The attachments' object store, or null where none is configured: a delete is then nothing to do. */
+  attachments(): Attachments | null;
   fetch: Fetch;
 }
 
@@ -104,6 +108,7 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
     boardRepository: async () =>
       this.env.WORK_INDEX ? ((this.env.WORK_INDEX.getByName(this.org) as unknown as { repository(): Promise<StoredRepository | null> }).repository()) : null,
     account: () => (this.env.ACCOUNTS ? (this.env.ACCOUNTS.getByName(this.org) as unknown as TokenMinter) : null),
+    attachments: () => attachmentsOf(this.env),
     fetch: (url, init) => fetch(url, init),
   };
 
@@ -194,6 +199,11 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
         return this.out.created(sessionId, body.createdAt as number);
       case "installation.indexed":
         return this.out.installationIndexed(body.installationId as string);
+      // The attachments' objects (work 126): a deleted row's, or every one of a removed session.
+      case "Attachments.delete":
+        return this.out.attachments()?.delete(attachmentKey(this.org, sessionId, body.id as string));
+      case "Attachments.removeAll":
+        return this.out.attachments()?.removeAll(attachmentPrefix(this.org, sessionId));
       default:
         throw new Error(`Org owes an unknown call: ${call}`);
     }
@@ -225,6 +235,11 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
       age: () => {
         work.age(sql, Date.now());
         alarms.set(sql, "age", Date.now() + AGE_EVERY_MS);
+        this.flush();
+      },
+      // Armed by the attachment writes for the next row that falls due (org/attachments.ts); re-arms itself.
+      [attachments.SWEEP_PURPOSE]: () => {
+        attachments.sweep(sql, Date.now());
         this.flush();
       },
     });
@@ -314,6 +329,19 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
   async result(p: Principal, id: string): Promise<ResultRow | null> {
     this.seen(p);
     return work.result(this.sql, p, id);
+  }
+
+  async mergeStart(p: Principal, id: string, m: Pick<MutateRequest, "name" | "args" | "idem">): Promise<Reply<{ result: ResultRow; replay: MutateReply | null }>> {
+    this.seen(p);
+    const replay = m.idem === undefined ? null : feeds.replayOf(this.sql, p, m.idem, await hashOf({ name: m.name, args: m.args }));
+    return work.mergeStart(this.sql, p, id, replay);
+  }
+
+  async mergeIntent(p: Principal, id: string, intent: { head: string } | "revert" | null): Promise<Reply<object>> {
+    this.seen(p);
+    const out = work.mergeIntent(this.sql, Date.now(), p, id, intent);
+    this.flush();
+    return out;
   }
 
   async overview(p: Principal): Promise<Overview> {
@@ -413,5 +441,40 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
   async linkPerson(from: string, to: string): Promise<void> {
     work.linkPerson(this.sql, Date.now(), from, to);
     this.flush();
+  }
+
+  // ------------------------------------------------------------------ attachments (work 126, org/attachments.ts)
+
+  async attachmentCreate(p: Principal, sessionId: string, id: string, spec: AttachmentSpec): Promise<Reply<{ attachment: Attachment; created: boolean }>> {
+    this.seen(p);
+    const out = attachments.create(this.sql, Date.now(), p, sessionId, id, spec);
+    this.flush();
+    return out;
+  }
+
+  async attachmentReady(id: string, etag: string): Promise<Reply<{ attachment: Attachment }>> {
+    return attachments.ready(this.sql, Date.now(), id, etag);
+  }
+
+  async attachmentRead(p: Principal, sessionId: string, id: string): Promise<Reply<{ attachment: Attachment }>> {
+    this.seen(p);
+    return attachments.read(this.sql, p, sessionId, id);
+  }
+
+  async attachmentList(p: Principal, sessionId: string): Promise<Reply<{ attachments: Attachment[] }>> {
+    this.seen(p);
+    return attachments.list(this.sql, p, sessionId);
+  }
+
+  async attachmentDelete(p: Principal, sessionId: string, id: string): Promise<Reply<Record<never, never>>> {
+    this.seen(p);
+    const out = attachments.remove(this.sql, Date.now(), p, sessionId, id);
+    this.flush();
+    return out;
+  }
+
+  async attachmentReserve(p: Principal, sessionId: string, turnId: string, messageId: string | null, ids: string[]): Promise<Reply<{ attachments: AttachmentMeta[] }>> {
+    this.seen(p);
+    return attachments.reserve(this.sql, Date.now(), p, sessionId, turnId, messageId, ids);
   }
 }

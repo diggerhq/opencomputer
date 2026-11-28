@@ -1,6 +1,6 @@
 // Org's mutations (spec 19.2, 39): one function per name, in `MUTATIONS`.
 //
-// The shape: `(tx, p, args) => MutationOutcome`.
+// The shape: `(tx, p, args, edge) => MutationOutcome`.
 // - `tx` is the transaction (`../tx.ts`): read through `tx.sql` and the readers (`../records.ts`), write and
 //   then `tx.stamp(table, ...key)`, `tx.remove`, `tx.op` (the undo row, when section 39 gives an
 //   inverse), `tx.occur` / `tx.occurFor`, and the owed calls (`tx.sendAccess`, `tx.interrupt`, …).
@@ -8,6 +8,8 @@
 //   caller cannot see, or may not change, is `refuse("not_found")`; a rule's no is
 //   `refuse("refused", reason)`; arguments of the wrong shape are `refuse("invalid_request", why)`.
 // - `args` is the request's body plus the ids of its path (`sid`, `tid`, …), unchecked.
+// - `edge` is what the edge established and a body cannot claim (`EdgeFacts`): the caller's name and
+//   email, and what GitHub did for `result.merge` and `result.revert`.
 // - It answers `applied(value?)` or a refusal. `runMutation` undoes whatever a refused function
 //   wrote, so a mutation may call another through `runMutation` and pass its refusal on.
 // The envelope (the `Idempotency-Key`, the publish) is `Org.mutate`'s, not a mutation's.
@@ -19,6 +21,7 @@
 // done.ts, places.ts, anchor.ts, remove-session.ts, track-agent.ts.
 
 import type { Principal } from "../../../auth/principal.js";
+import type { EdgeFacts } from "../contract.js";
 import type { Tx } from "../tx.js";
 import { keeps, refuse, type MutationFn, type MutationOutcome } from "./outcome.js";
 import { THREAD_MUTATIONS } from "./thread.js";
@@ -42,11 +45,11 @@ export const MUTATIONS: Record<MutationName, MutationFn> = {
 };
 
 /** Run one mutation by name. A refusal leaves no write behind. */
-export function runMutation(tx: Tx, p: Principal, name: string, args: unknown): MutationOutcome {
+export function runMutation(tx: Tx, p: Principal, name: string, args: unknown, edge: EdgeFacts = {}): MutationOutcome {
   const fn = Object.hasOwn(MUTATIONS, name) ? MUTATIONS[name as MutationName] : undefined;
   if (!fn) return refuse("invalid_request", "unknown_mutation");
   const input = typeof args === "object" && args !== null && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
-  const out = tx.attempt(() => fn(tx, p, input));
+  const out = tx.attempt(() => fn(tx, p, input, edge));
   const keep = out.ok ? undefined : keeps.get(out);
   if (keep) {
     keeps.delete(out as never);

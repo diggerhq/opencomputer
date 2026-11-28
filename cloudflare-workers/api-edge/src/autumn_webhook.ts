@@ -21,6 +21,7 @@
 import { emitBillingEvent, type BillingEventName, type BillingEventsEnv } from "./billing_events";
 import { notifyTrialEvent, syncLoopsPlan, trialReason, type LoopsEnv } from "./loops";
 import { sendSlackAlert, trialEndedAlert } from "./slack_alerts";
+import { activatePromoClaim } from "./promo_claims";
 
 // AutumnApiEnv is the minimal binding set for calling Autumn's REST API
 // (GetCustomer / checkout). The dashboard handlers satisfy this without the
@@ -47,6 +48,7 @@ const CREDITS_FEATURE_ID = "credits";
 // Work-minute plans (trial, pro and max v2; serverless-agents-ws 086) carry a
 // work_minutes balance; credit-based plans do not.
 export const WORK_MINUTES_FEATURE_ID = "work_minutes";
+const BYO_MODEL_SUBSCRIPTIONS_FEATURE_ID = "byo_model_subscriptions";
 const AGENT_RUNTIME_FEATURE_ID = "agent_runtime_2gb_1vcpu";
 // blue sends two overlapping measures of a managed session: one segment per
 // settled turn (any runtime), and the microVM's lease, which also counts idle
@@ -827,6 +829,15 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
   }
   if (planChange) await syncLoopsPlan(env, orgID, usagePlan);
 
+  // A promo checkout that has now been paid takes its claim (and early slot).
+  // Every projection runs this, so the webhook, the checkout return and the
+  // billing page all get there; it is a no-op without a pending claim.
+  if (isPaidUsagePlan(usagePlan)) {
+    await activatePromoClaim(env.OPENCOMPUTER_DB, orgID, usagePlan, nowSec * 1_000).catch((err) =>
+      console.error(`promo: activate claim org=${orgID}`, err),
+    );
+  }
+
   return { customer: cust, creditsRemaining, halted, haltReason: reason, warning, wasHalted, usagePlan };
 }
 
@@ -1053,9 +1064,14 @@ export async function autumnUsagePlanPurchase(
     successUrl: string;
     // A downgrade waits for the period end (086 "Plan changes").
     planSchedule?: "immediate" | "end_of_cycle";
+    // A promotion's terms for this customer only (promo_claims.ts): Autumn's
+    // attach `customize` replaces the plan's base price and its items.
+    customize?: { price: number; workMinutes: number };
+    // The customer, when the caller has already loaded it.
+    customer?: AutumnCustomer | null;
   },
 ): Promise<{ url: string | null }> {
-  const customer = await getAutumnCustomer(env, params.customerId);
+  const customer = params.customer !== undefined ? params.customer : await getAutumnCustomer(env, params.customerId);
   // Only the pre-trial `base` grant carries. The 3-day trial's minutes and $10
   // token credit do not (serverless-agents-ws 086 "Plan changes": trial → paid
   // starts the paid allowance fresh).
@@ -1076,6 +1092,7 @@ export async function autumnUsagePlanPurchase(
       feature_ids: [CREDITS_FEATURE_ID],
     };
   }
+  if (params.customize) body.customize = usagePlanCustomize(params.customize);
 
   const base = env.AUTUMN_BASE_URL || DEFAULT_BASE_URL;
   const resp = await fetch(`${base}/billing.attach`, {
@@ -1090,6 +1107,42 @@ export async function autumnUsagePlanPurchase(
   if (!resp.ok) throw new Error(`autumn billing.attach ${resp.status}: ${await resp.text()}`);
   const result = (await resp.json()) as { payment_url?: string | null };
   return { url: result.payment_url ?? null };
+}
+
+// usagePlanCustomize is a Pro/Max plan for one customer at another monthly
+// price and minute pool. `items` replaces the plan's items wholesale, so it
+// restates every catalog item of pro and max (scripts/autumn/autumn.config.ts):
+// the monthly work-minute pool and the BYO model subscription entitlement.
+export function usagePlanCustomize(terms: { price: number; workMinutes: number }): Record<string, unknown> {
+  return {
+    price: { amount: terms.price, interval: "month" },
+    items: [
+      { feature_id: WORK_MINUTES_FEATURE_ID, included: terms.workMinutes, reset: { interval: "month" } },
+      { feature_id: BYO_MODEL_SUBSCRIPTIONS_FEATURE_ID },
+    ],
+  };
+}
+
+// autumnRevertUsagePlan puts a promotional Pro/Max customer back on the
+// catalog plan (price and minutes) at the end of the current billing cycle.
+// Attaching the standard plan again is how Autumn moves a customer off a
+// custom version; plan_schedule defers it to the period end, so the promo
+// cycle already paid for runs out first.
+export async function autumnRevertUsagePlan(
+  env: AutumnApiEnv,
+  params: { customerId: string; planId: "pro" | "max" },
+): Promise<void> {
+  const base = env.AUTUMN_BASE_URL || DEFAULT_BASE_URL;
+  const resp = await fetch(`${base}/billing.attach`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.AUTUMN_SECRET_KEY}`,
+      "content-type": "application/json",
+      "x-api-version": "2.3.0",
+    },
+    body: JSON.stringify({ customer_id: params.customerId, plan_id: params.planId, plan_schedule: "end_of_cycle" }),
+  });
+  if (!resp.ok) throw new Error(`autumn billing.attach (revert) ${resp.status}: ${await resp.text()}`);
 }
 
 // autumnSetupPayment creates a Stripe SETUP session that saves a card for future

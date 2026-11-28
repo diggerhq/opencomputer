@@ -5,7 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, describe, expect, it } from 'vitest';
 import { serveFiles } from './send-file-socket.js';
-import { type FileUpload, fileSender, kindOf, type Posted } from './send-file.js';
+import { checkSendable, type FileUpload, fileSender, kindOf, type Posted } from './send-file.js';
 
 const run = promisify(execFile);
 const BIN = path.resolve(import.meta.dirname, '../../bin/calvin-send-file');
@@ -52,6 +52,21 @@ describe('calvin-send-file', () => {
     await expect(cli(['/etc/hostname'])).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining('only files inside the workspace') });
     await expect(cli(['secret.txt'])).rejects.toMatchObject({ stderr: expect.stringContaining('secret $TOKEN') });
     expect(uploads.length).toBe(n);
+  });
+
+  it('sends a file a person attached: the attachments directory is a root beside the workspace and the temp directory', async () => {
+    // Outside both other roots, as the home volume is.
+    const outside = mkdtempSync(path.resolve(import.meta.dirname, '../../node_modules/.sf-att-'));
+    try {
+      const file = path.join(outside, 'attachments', 'k', 'at_1-spec.pdf');
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, 'pdf');
+      writeFileSync(path.join(outside, 'beside.txt'), 'x');
+      await expect(checkSendable(cwd, file, path.join(outside, 'attachments'))).resolves.toMatchObject({ size: 3 });
+      await expect(checkSendable(cwd, path.join(outside, 'beside.txt'), path.join(outside, 'attachments'))).rejects.toThrow('only files inside the workspace');
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it('says where it works when not in a session', async () => {

@@ -21,6 +21,8 @@ export function serverReads({
 }) {
   const get = store.getState
   const set = store.setState
+  // One read of the capabilities at a time, whoever asks.
+  let capabilities: Promise<Capabilities> | null = null
   return {
     async loadEarlier(tid?: string) {
       const key = tid ?? ''
@@ -47,8 +49,19 @@ export function serverReads({
       return (await client.read<{ review: Review }>(`/work/results/${resultId}/review`)).review
     },
     // What a session may be started with or changed to (the model and effort pickers).
-    async capabilities() {
-      return (await client.read<{ capabilities: Capabilities }>('/capabilities')).capabilities
+    // Whether files can be attached is kept in the store from here, for the
+    // composers (each has the pickers, which ask); a server that does not say
+    // can take them.
+    capabilities(): Promise<Capabilities> {
+      capabilities ??= client
+        .read<{ capabilities: Capabilities }>('/capabilities')
+        .then(({ capabilities: c }) => {
+          const canAttach = c.features?.attachments !== false
+          if (canAttach !== get().canAttach) set({ canAttach })
+          return c
+        })
+        .finally(() => (capabilities = null))
+      return capabilities
     },
     async diff(resultId: string) {
       return (await client.read<{ head: string; diff: string }>(`/work/results/${resultId}/diff`)).diff

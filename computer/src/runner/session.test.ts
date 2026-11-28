@@ -311,3 +311,36 @@ describe('Session: who prompts wait on (work 112)', () => {
     expect(JSON.stringify(t.of('chat.postMessage')[0].args.blocks)).toContain('"action_id":"ac:aw:open"');
   });
 });
+
+const { Inbox } = await import('./harness/claude/inbox.js');
+const { APP_NOTE } = await import('./role-notes.js');
+
+describe('Session: the role note (role-notes.ts)', () => {
+  const work = { api: { call: async () => ({}) }, session: () => ({ id: 'cs_1' }) };
+  const pushed = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls.map(([m]) => JSON.stringify((m as { message: { content: unknown } }).message.content));
+
+  it('goes in front of the first message, and again after a compaction may have summarised it away', async () => {
+    const spy = vi.spyOn(Inbox.prototype, 'push');
+    const s = slack();
+    const cwd = mkdtempSync(path.join(tmpdir(), 'session-test-'));
+    const info = { key: 'k', kind: 'thread' as const, channel: 'C1', threadTs: '1.0', userId: 'U1', cwd, title: 't', mode: 'default' as const, sdkSessionId: 'sdk-1' };
+    const sess = new Session(info, s.client, () => {}, { busy: () => {}, work } as never);
+    const note = JSON.stringify(APP_NOTE).slice(1, 40);
+    await sess.send('one', 'U1');
+    harness.q.feed(messageStart, ...textBlock(0, 'ok'), result());
+    await settle();
+    await sess.send('two', 'U1');
+    harness.q.feed(messageStart, ...textBlock(0, 'ok'), result());
+    await settle();
+    harness.q.feed(
+      { type: 'system', subtype: 'status', status: 'compacting' },
+      { type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'auto', pre_tokens: 160_000, post_tokens: 9864, duration_ms: 1 } },
+      messageStart,
+    );
+    await settle();
+    await sess.send('three', 'U1');
+    await settle();
+    expect(pushed(spy).map((c) => c.includes(note))).toEqual([true, false, true]);
+  });
+});

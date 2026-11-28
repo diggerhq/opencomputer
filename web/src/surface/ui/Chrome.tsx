@@ -70,6 +70,7 @@ const KEYS: [string, string[]][] = [
   ['Start from anywhere', ['⌘K']],
   ['Reply', ['R']],
   ['Done', ['E']],
+  ['Merge the pull request, when a thread suggests done', ['M']],
   ['Undo', ['Z']],
   ['Track it', ['T']],
   ['Review changes', ['Space']],

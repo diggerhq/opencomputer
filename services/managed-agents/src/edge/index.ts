@@ -328,6 +328,7 @@ import {
   upstreamTiming,
 } from "./latency.js";
 import { computerModelKeyChanged, routeComputerDashboard } from "../http/dashboard/routes.js";
+import { routeAttachmentObject } from "../http/api/attachment-objects.js";
 import { routeComputerPublic } from "../http/public-routes.js";
 import { routeComputerServiceConnections } from "./computer-service-connections.js";
 import { COMPUTER_PRINCIPAL, isComputerGrantRoute } from "./computer-principal.js";
@@ -10625,6 +10626,11 @@ export default {
     context: ExecutionContext,
   ): Promise<Response> {
     try {
+      // An attachment's bytes on a deployment without an S3 endpoint (work 126):
+      // the URL's signature is the credential, and any origin may call it, so
+      // it answers its own preflight and keeps its CORS headers.
+      const attachmentObject = await routeAttachmentObject(request, env as Env & ComputerEdgeEnv);
+      if (attachmentObject) return attachmentObject;
       if (request.method === "OPTIONS") {
         return withCors(new Response(null, { status: 204 }));
       }

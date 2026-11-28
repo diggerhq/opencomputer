@@ -6,13 +6,18 @@ import { extname, join, normalize } from 'node:path'
 import { APP_ORIGIN } from '../shared/bridge'
 import { COMPUTER_API_PREFIX } from './config'
 
+// A message's files (work 126) go to and come from the attachment store by
+// signed URLs, straight from the page: the relay below carries JSON only. That
+// store is the one host named here besides the app itself.
+const ATTACHMENT_STORE = 'https://*.r2.cloudflarestorage.com'
+
 export const CSP = [
   "default-src 'none'",
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob:",
+  `img-src 'self' data: blob: ${ATTACHMENT_STORE}`,
   "font-src 'self' data:",
-  "connect-src 'self'",
+  `connect-src 'self' ${ATTACHMENT_STORE}`,
   "worker-src 'self'",
   "frame-src 'none'",
   "object-src 'none'",

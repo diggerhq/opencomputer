@@ -3,13 +3,15 @@
 // The runner offers it as an in-process MCP tool next to start_thread; the
 // upload goes straight to Slack with the bot token (`files:write`).
 //
-// Only files under the session's workspace or the temp directory can be sent,
-// so a prompt cannot talk the agent into posting host files such as
-// credentials into a channel.
+// Only files under the session's workspace, the temp directory or the
+// attachments directory (attachment-dir.ts: a file a person attached can be
+// posted back) can be sent, so a prompt cannot talk the agent into posting
+// host files such as credentials into a channel.
 
 import { readFile, realpath, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { attachmentsRoot } from './attachment-dir.js';
 import { tool } from './tool.js';
 import { z } from 'zod';
 
@@ -41,14 +43,14 @@ const KINDS: [Posted['kind'], RegExp][] = [
 ];
 export const kindOf = (file: string): Posted['kind'] => KINDS.find(([, re]) => re.test(file))?.[0] ?? 'other';
 
-/** Resolves `file` to a real path inside one of `roots`, or throws why it cannot be sent. */
-export async function checkSendable(cwd: string, file: string): Promise<{ abs: string; size: number }> {
+/** Resolves `file` to a real path inside the workspace, the temp directory or `attachments`, or throws why it cannot be sent. */
+export async function checkSendable(cwd: string, file: string, attachments = attachmentsRoot()): Promise<{ abs: string; size: number }> {
   const abs = await realpath(path.resolve(cwd, file)).catch(() => {
     throw new Error(`no such file: ${file}`);
   });
-  const roots = await Promise.all([cwd, os.tmpdir()].map((r) => realpath(r).catch(() => r)));
+  const roots = await Promise.all([cwd, os.tmpdir(), attachments].map((r) => realpath(r).catch(() => r)));
   if (!roots.some((r) => abs.startsWith(r + path.sep)))
-    throw new Error(`only files inside the workspace (${cwd}) or ${os.tmpdir()} can be sent: ${file}`);
+    throw new Error(`only files inside the workspace (${cwd}), ${os.tmpdir()} or ${attachments} can be sent: ${file}`);
   const st = await stat(abs);
   if (!st.isFile()) throw new Error(`not a regular file: ${file}`);
   if (st.size === 0) throw new Error(`file is empty: ${file}`);

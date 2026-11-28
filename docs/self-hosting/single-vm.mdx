@@ -37,6 +37,10 @@ The installer sets up the following:
 - the `slack-presence-host` service and the model proxy
 - the `oc-gateway` user (home `/var/lib/oc-gateway`, lingering enabled), which runs the gateway
 - the gateway's files in `/var/lib/oc-gateway/selfhost`, copied from your checkout and owned by `oc-gateway`
+- the gateway image, pulled from `ghcr.io/diggerhq/computer-gateway` and pinned in `compose.yaml` to the build of your checkout's gateway source (`:src-<hash>`, from `selfhost/gateway/source-tag.sh`)
+- `opencomputer-imds-deny`, which denies the cloud instance metadata service (169.254.169.254, and `fd00:ec2::254` and `fd20:ce::254` over IPv6) to every user but root, on any cloud. DNS (port 53) and NTP (UDP 123) to that address stay open, because Google Cloud serves both there. A non-root program of your own that reads the metadata service stops working; run it as root. `sudo selfhost/check-imds.sh` checks the rule.
+
+CI publishes the gateway image only after a change to the gateway's source reaches `main`. If your checkout's image isn't published, for example on a branch with its own gateway changes, the installer stops and says so. Add `--build-gateway` to build it on the VM instead, which takes 20 to 30 minutes.
 
 The host agent doesn't start yet, because `/etc/opencomputer/selfhost.env` has no token. Step 4 adds it.
 
@@ -59,6 +63,7 @@ Set these in `.env`:
 | `GATEWAY_PORT` | The gateway's port on `127.0.0.1`. The default is `8080`. |
 | `GATEWAY_ORG` | The organization ID. The default is `org_selfhost`. Don't change it after the first start. |
 | `SP_SETUP_OPEN` | Set it to `1` to keep `/setup` open once setup is complete. Otherwise leave it empty. |
+| `GATEWAY_IMAGE` | Leave it empty to run the image the installer pinned. To run another image, set a tag or an `@sha256:` digest, such as `ghcr.io/diggerhq/computer-gateway:v1.2.3`, not `:main`. Then run the installer again so it pulls the image. |
 
 ## 3. Start the gateway
 
@@ -71,7 +76,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now opencomputer-gateway.service
 ```
 
-The first start builds the gateway image, which takes a few minutes. Then `curl -s 127.0.0.1:8080/healthz` returns `{"ok":true,"mode":"miniflare"}`.
+The installer already pulled the gateway image, so the gateway starts in seconds. Then `curl -s 127.0.0.1:8080/healthz` returns `{"ok":true,"mode":"miniflare"}`.
 
 Stop the gateway with `systemctl --user stop opencomputer-gateway`. If you use `podman stop`, systemd starts it again. To try the gateway in the foreground without the unit, run `podman-compose up` from `~/selfhost`.
 
@@ -129,6 +134,22 @@ Slack needs `PUBLIC_URL` set to an HTTPS origin.
 
 To start a session, mention the app in a channel or DM it.
 
+## Attachments
+
+Files that people attach to a message are stored in the gateway's volume, and the gateway serves them itself. Nothing needs to be set up. A browser uploads to and reads from a short-lived signed URL on the address it opened the dashboard at. Sessions read attachments at `PUBLIC_URL`.
+
+To keep attachments in an S3-compatible store instead (Cloudflare R2, Amazon S3, MinIO), set these in `.env` and restart the gateway:
+
+```sh
+ATTACHMENTS_S3_ENDPOINT=https://<account>.r2.cloudflarestorage.com
+ATTACHMENTS_S3_BUCKET=attachments
+ATTACHMENTS_S3_ACCESS_KEY_ID=…
+ATTACHMENTS_S3_SECRET_ACCESS_KEY=…
+ATTACHMENTS_S3_REGION=auto   # optional; `auto` is the default, for R2
+```
+
+All four of the first values are needed; with any missing, the gateway uses its volume. The bucket's CORS must allow `PUT`, `GET` and `HEAD` from any origin, with the `content-type` and `range` headers. Files already stored in the volume are not copied to the bucket.
+
 ## HTTPS
 
 The gateway listens only on `127.0.0.1`. To expose it, run a Cloudflare Tunnel on a custom domain, which needs no inbound ports:
@@ -149,7 +170,7 @@ Any other reverse proxy that terminates TLS in front of `127.0.0.1:8080` also wo
 
 All of the gateway's state is in the `opencomputer_gateway-data` volume:
 
-- Miniflare's data
+- Miniflare's data, including attachments (unless an S3-compatible store holds them)
 - `keys.json`, which decrypts the stored secrets
 - `host-token`
 
@@ -178,11 +199,11 @@ Session workspaces live on the host under `/data`, outside the volume. Back them
 Back up the volume first. The gateway applies new database migrations when it starts.
 
 ```sh
-# as the sudo user: updates the host and the gateway's files in /var/lib/oc-gateway/selfhost (.env is kept)
+# as the sudo user: updates the host and the gateway's files in /var/lib/oc-gateway/selfhost (.env is kept),
+# and pulls the gateway image of the new checkout (--build-gateway: builds it instead)
 cd ~/oc-host && git pull && sudo selfhost/host-install.sh
 
 # as oc-gateway
-cd ~/selfhost && podman-compose build gateway
 systemctl --user restart opencomputer-gateway
 ```
 

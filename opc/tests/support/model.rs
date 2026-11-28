@@ -614,7 +614,7 @@ impl World {
         let active = s.active().cloned();
         let Some(active) = active else {
             let tid = self.new_turn(sid, "message", Some(input.clone()), if_busy, author, None);
-            self.emit(sid, Some(&tid), "message.received", Some(author), json!({"input": input, "ifBusy": if_busy, "delivery": "started", "interruptedTurnIds": [], "declinedAskIds": []}));
+            self.emit(sid, Some(&tid), "message.received", Some(author), json!({"input": input, "ifBusy": if_busy, "delivery": "started", "interruptedTurnIds": [], "declinedAskIds": [], "attachments": []}));
             let s = self.s(sid);
             if s.suspended && !s.starting {
                 self.begin_resume(sid);
@@ -630,7 +630,7 @@ impl World {
                 let mut stopped = vec![atid.clone()];
                 stopped.extend(self.s(sid).queued_ids());
                 let tid = self.new_turn(sid, "message", Some(input.clone()), if_busy, author, None);
-                self.emit(sid, Some(&tid), "message.received", Some(author), json!({"input": input, "ifBusy": if_busy, "delivery": "started", "interruptedTurnIds": stopped, "declinedAskIds": []}));
+                self.emit(sid, Some(&tid), "message.received", Some(author), json!({"input": input, "ifBusy": if_busy, "delivery": "started", "interruptedTurnIds": stopped, "declinedAskIds": [], "attachments": []}));
                 for q in self.s(sid).queued_ids().into_iter().filter(|q| *q != tid) {
                     self.end_turn(sid, &q, End::Cancelled { reason: "interrupted".into(), forced: false }, Some(author));
                 }
@@ -641,7 +641,7 @@ impl World {
             "steer" if !cancelling => {
                 let open: Vec<String> = self.s(sid).open_asks();
                 // A message sent while an ask is open declines it and is delivered as steering.
-                let mseq = self.emit(sid, Some(&atid), "message.received", Some(author), json!({"input": input, "ifBusy": if_busy, "delivery": "steered", "interruptedTurnIds": [], "declinedAskIds": open}));
+                let mseq = self.emit(sid, Some(&atid), "message.received", Some(author), json!({"input": input, "ifBusy": if_busy, "delivery": "steered", "interruptedTurnIds": [], "declinedAskIds": open, "attachments": []}));
                 for a in open {
                     self.close_ask(sid, &a, "declined", Some(author), json!({"message": input, "messageSeq": mseq}));
                 }
@@ -657,7 +657,7 @@ impl World {
                     return Err(ApiErr::new(409, "queue_full", "20 turns are already queued").with("retryAfterMs", 1000));
                 }
                 let tid = self.new_turn(sid, "message", Some(input.clone()), if_busy, author, None);
-                self.emit(sid, Some(&tid), "message.received", Some(author), json!({"input": input, "ifBusy": if_busy, "delivery": "queued", "interruptedTurnIds": [], "declinedAskIds": []}));
+                self.emit(sid, Some(&tid), "message.received", Some(author), json!({"input": input, "ifBusy": if_busy, "delivery": "queued", "interruptedTurnIds": [], "declinedAskIds": [], "attachments": []}));
                 self.emit(sid, Some(&tid), "turn.queued", Some(author), json!({"position": queued + 1, "trigger": "message", "subagentId": null}));
                 Ok((tid, "queued"))
             }

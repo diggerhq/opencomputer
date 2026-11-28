@@ -6,11 +6,12 @@
 import type { ManagedAgentBillingService } from "../../edge/billing-admission.js";
 import { ZONES, standsIn, validSize, validZone } from "./machine/placement.js";
 import type { ActorEnv } from "../addresses.js";
+import type { AttachmentsEnv } from "../../attachments/store.js";
 import type { PreviewsEnv } from "./previews.js";
 import type { PublicComputerState } from "./contract.js";
 
 /** Preview URLs (work 074, previews.ts): off unless all of PreviewsEnv is set. */
-export interface ComputerEdgeEnv extends PreviewsEnv, ActorEnv {
+export interface ComputerEdgeEnv extends PreviewsEnv, ActorEnv, AttachmentsEnv {
   /** The managed-agent session index (session_creations), read by oc-usage-chart. */
   SERVERLESS_AGENTS_DB?: D1Database;
   ACCOUNTS: DurableObjectNamespace;

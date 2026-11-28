@@ -33,13 +33,13 @@ describe('Fold', () => {
     add('session.created', { title: 'hello', origin: { type: 'opc', client: 'opc/1', slack: null }, settings: { model: 'm1', effort: null, mode: 'default', speed: null } });
     add('session.status_changed', { from: null, to: 'idle' });
     const t1 = mintId('tn');
-    add('message.received', { input: 'do it', ifBusy: 'queue', delivery: 'started', interruptedTurnIds: [], declinedAskIds: [] }, t1);
+    add('message.received', { input: 'do it', ifBusy: 'queue', delivery: 'started', interruptedTurnIds: [], declinedAskIds: [], attachments: [] }, t1);
     add('turn.started', { model: 'm1', effort: null, mode: 'default', trigger: 'message', subagentId: null }, t1);
     add('session.status_changed', { from: 'idle', to: 'running' });
     add('tool.started', { subagentId: null, toolName: 'Bash', callId: 'c1', parentCallId: null, title: 'ls', input: {}, inputTruncated: false }, t1);
     expect(fold.openCalls(t1)).toEqual([{ subagentId: null, toolName: 'Bash', callId: 'c1', parentCallId: null, title: 'ls' }]);
     const t2 = mintId('tn');
-    add('message.received', { input: 'next', ifBusy: 'queue', delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [] }, t2);
+    add('message.received', { input: 'next', ifBusy: 'queue', delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [], attachments: [] }, t2);
     add('turn.queued', { position: 1, trigger: 'message', subagentId: null }, t2);
     const a1 = mintId('ak');
     add('ask.opened', { ask: ask(a1, t1) as never }, t1);
@@ -76,9 +76,9 @@ describe('Fold', () => {
   it('steering messages join the running turn', () => {
     const { fold, add } = feed();
     const t1 = mintId('tn');
-    add('message.received', { input: 'a', ifBusy: 'queue', delivery: 'started', interruptedTurnIds: [], declinedAskIds: [] }, t1);
+    add('message.received', { input: 'a', ifBusy: 'queue', delivery: 'started', interruptedTurnIds: [], declinedAskIds: [], attachments: [] }, t1);
     add('turn.started', { model: null, effort: null, mode: null, trigger: 'message', subagentId: null }, t1);
-    add('message.received', { input: 'b', ifBusy: 'steer', delivery: 'steered', interruptedTurnIds: [], declinedAskIds: [] }, t1);
+    add('message.received', { input: 'b', ifBusy: 'steer', delivery: 'steered', interruptedTurnIds: [], declinedAskIds: [], attachments: [] }, t1);
     add('turn.steered', { messageSeq: 1 }, t1);
     expect(fold.turn(t1)?.steering.map((m) => m.input)).toEqual(['b']);
   });
@@ -107,7 +107,7 @@ describe('Fold', () => {
   it('tracks subagents: running on the Session, progress folded in, background ones outliving their turn', () => {
     const { fold, add } = feed();
     const t1 = mintId('tn');
-    add('message.received', { input: 'go', ifBusy: 'queue', delivery: 'started', interruptedTurnIds: [], declinedAskIds: [] }, t1);
+    add('message.received', { input: 'go', ifBusy: 'queue', delivery: 'started', interruptedTurnIds: [], declinedAskIds: [], attachments: [] }, t1);
     add('turn.started', { model: null, effort: null, mode: null, trigger: 'message', subagentId: null }, t1);
     const sa = mintId('sa');
     const sub = {
@@ -153,9 +153,9 @@ describe('Fold', () => {
     events.push(
       add('session.created', { title: 'hello', origin: { type: 'opc', client: 'opc/1', slack: null }, settings: { model: 'm1', effort: null, mode: 'default', speed: null } }),
       add('session.updated', { changes: { 'metadata.k': { from: null, to: 'v' } } }),
-      add('message.received', { input: 'go', ifBusy: 'queue', delivery: 'started', interruptedTurnIds: [], declinedAskIds: [] }, t1),
+      add('message.received', { input: 'go', ifBusy: 'queue', delivery: 'started', interruptedTurnIds: [], declinedAskIds: [], attachments: [] }, t1),
       add('turn.started', { model: null, effort: null, mode: null, trigger: 'message', subagentId: null }, t1),
-      add('message.received', { input: 'use pnpm', ifBusy: 'steer', delivery: 'steered', interruptedTurnIds: [], declinedAskIds: [], messageId: m1 }, t1),
+      add('message.received', { input: 'use pnpm', ifBusy: 'steer', delivery: 'steered', interruptedTurnIds: [], declinedAskIds: [], attachments: [], messageId: m1 }, t1),
       add('tool.started', { subagentId: null, toolName: 'Bash', callId: 'c1', parentCallId: null, title: 'ls', input: {}, inputTruncated: false }, t1),
       add('subagent.started', { subagent: sub }, t1),
       add('ask.opened', { ask: ask(mintId('ak'), t1) as never }, t1),

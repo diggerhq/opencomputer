@@ -368,7 +368,6 @@
                 },
                 "input": {
                   "type": "string",
-                  "minLength": 1,
                   "maxLength": 100000
                 },
                 "ifBusy": {
@@ -3377,6 +3376,32 @@
       ],
       "additionalProperties": true
     },
+    "MessageAttachment": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "mimetype": {
+          "type": "string"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "mimetype",
+        "bytes"
+      ],
+      "additionalProperties": true
+    },
     "Event.message.received": {
       "type": "object",
       "properties": {
@@ -3466,6 +3491,12 @@
               "type": "string",
               "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
               "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            "attachments": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/MessageAttachment"
+              }
             }
           },
           "required": [
@@ -3473,7 +3504,8 @@
             "ifBusy",
             "delivery",
             "interruptedTurnIds",
-            "declinedAskIds"
+            "declinedAskIds",
+            "attachments"
           ],
           "additionalProperties": true
         }
@@ -6569,7 +6601,6 @@
         },
         "input": {
           "type": "string",
-          "minLength": 1,
           "maxLength": 100000
         },
         "title": {

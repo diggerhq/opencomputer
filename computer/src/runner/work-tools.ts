@@ -89,7 +89,7 @@ export function workTools(w: Work): CalvinTool[] {
     ),
     tool(
       'mark_ready',
-      'Say this thread has something for the person to look at: `what` in one line, as they will read it in the list. Name the result (from add_result) when there is one.',
+      'Say this thread has something for the person to look at: the work is done, or you found something they should review (a bug, a risk, an answer to check). `what` in one line, as they will read it in the list. Name the result (from add_result) when there is one; a pull request result marks the thread ready by itself.',
       { what: z.string().min(1).max(500).describe('One line: what is ready'), result: z.string().optional().describe('The result\'s id (res_…)') },
       ({ what, result }, call) =>
         answer('not marked ready', async () => {
@@ -99,7 +99,7 @@ export function workTools(w: Work): CalvinTool[] {
     ),
     tool(
       'need_you',
-      'Say this thread cannot go on without the person: `what` they must decide or do, in one line. It clears when they answer.',
+      'Say this thread cannot go on without the person: `what` they must decide or do, in one line. Call it before you end a turn that asks them to approve, choose or answer (a spec or plan to approve, a question): nothing else marks the thread, and a question left in your reply goes unseen in the list. It clears when they answer.',
       { what: z.string().min(1).max(500).describe('One line: what you need from the person') },
       ({ what }, call) =>
         answer('not marked', async () => {

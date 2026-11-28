@@ -44,13 +44,13 @@ export function Select({
         id={id}
         data-slot="select-trigger"
         className={cn(
-          'border-input focus-visible:border-ring/60 data-placeholder:text-muted-foreground flex h-8 w-full items-center justify-between gap-2 rounded-md border bg-transparent px-2.5 text-sm transition-colors outline-none disabled:cursor-not-allowed disabled:opacity-50',
+          'border-input focus-visible:focus-ring data-placeholder:text-muted-foreground flex h-8 w-full items-center justify-between gap-2 rounded-md border bg-transparent px-2.5 text-sm transition-colors duration-150 outline-none disabled:cursor-not-allowed disabled:opacity-50',
           className,
         )}
       >
         <SelectPrimitive.Value placeholder={placeholder} />
         <SelectPrimitive.Icon asChild>
-          <ChevronDown className="size-4 shrink-0 opacity-50" />
+          <ChevronDown className="size-3.5 shrink-0 opacity-60" strokeWidth={1.75} />
         </SelectPrimitive.Icon>
       </SelectPrimitive.Trigger>
       <SelectPrimitive.Portal>
@@ -60,7 +60,7 @@ export function Select({
           // Don't let closing this menu dismiss a parent Dialog (floating-layer.ts).
           onPointerDownOutside={markFloatingLayerPointerDismiss}
           onEscapeKeyDown={onEscapeKeyDown}
-          className="bg-popover text-popover-foreground ring-foreground/10 shadow-overlay data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 z-50 max-h-(--radix-select-content-available-height) min-w-(--radix-select-trigger-width) origin-(--radix-select-content-transform-origin) overflow-hidden rounded-lg p-1 ring-1 duration-100"
+          className="bg-popover text-popover-foreground ring-foreground/10 shadow-overlay data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 z-50 max-h-(--radix-select-content-available-height) min-w-(--radix-select-trigger-width) origin-(--radix-select-content-transform-origin) overflow-hidden rounded-lg p-1 ring-1 duration-150"
         >
           <SelectPrimitive.Viewport>
             {options.map((o, i) =>
@@ -73,7 +73,7 @@ export function Select({
                 <SelectPrimitive.Item
                   key={o.value}
                   value={o.value}
-                  className="focus:bg-accent focus:text-accent-foreground relative flex cursor-default items-center rounded-md py-1 pr-8 pl-2 text-sm outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50"
+                  className="focus:bg-row-selected focus:text-accent-foreground relative flex cursor-default items-center rounded-sm py-[5px] pr-8 pl-2 text-meta outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50"
                 >
                   <SelectPrimitive.ItemText>{o.label}</SelectPrimitive.ItemText>
                   {o.hint ? (
@@ -83,7 +83,7 @@ export function Select({
                   ) : null}
                   <span className="absolute right-2 flex items-center">
                     <SelectPrimitive.ItemIndicator>
-                      <Check className="size-4" />
+                      <Check className="text-muted-foreground size-3.5" strokeWidth={2} />
                     </SelectPrimitive.ItemIndicator>
                   </span>
                 </SelectPrimitive.Item>

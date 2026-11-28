@@ -9,8 +9,8 @@
 
 export const CROCKFORD = "0123456789abcdefghjkmnpqrstvwxyz";
 
-/** Each prefix's length. `trk`, `res`, `prp`, `op`: Org's tracks, results, proposals and ops (`crockfordId`'s 16). */
-const LENGTHS = { cs: 16, ev: 16, tn: 12, ak: 12, tm: 12, wc: 12, trk: 16, res: 16, prp: 16, op: 16 } as const;
+/** Each prefix's length. `trk`, `res`, `prp`, `op`: Org's tracks, results, proposals and ops (`crockfordId`'s 16); `at`: attachments (work 126). */
+const LENGTHS = { cs: 16, ev: 16, tn: 12, ak: 12, tm: 12, wc: 12, trk: 16, res: 16, prp: 16, op: 16, at: 16 } as const;
 export type IdPrefix = keyof typeof LENGTHS;
 
 const PATTERNS = Object.fromEntries(

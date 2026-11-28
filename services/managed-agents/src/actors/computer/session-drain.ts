@@ -12,6 +12,9 @@
 //     summary never overwrites a newer one, so `GET /sessions` never reads the log.
 //   - A journal batch is acked only once the SessionLog stored it; batches of one session are
 //     appended in arrival order (one promise chain per session).
+//   - Every spec to the host carries the row's `sdk_session_id`, the agent's conversation as the runner
+//     last reported it (durable-object.ts `report`). Whether it can be resumed is the host's and the
+//     runner's to decide; a spec without it starts a new, empty conversation.
 //   - Slack sessions are unchanged for users: they get a `cs_` id lazily on delivery, their
 //     title/mode/model stay the Slack path's.
 
@@ -27,10 +30,11 @@ import type { Sql } from "../../durable/sql.js";
 import { owed } from "../../durable/outbox.js";
 import type { Ask, LogSummary } from "../../api-objects/objects.js";
 import { DEFAULT_MODE, MODELS, capabilities } from "../../api-objects/capabilities.js";
+import { attachmentsOf } from "../../attachments/store.js";
 import type { ComputerEdgeEnv } from "./config.js";
 import type { ComputerKeys } from "./held-for-org/keys/keys.js";
 import type { CalvinApiError, CalvinJournalReport } from "../../host-protocol/api-shapes.js";
-import type { CalvinGatewayToHost, CalvinHostToGatewayV4 } from "../../host-protocol/frames.js";
+import type { CalvinApiAttachment, CalvinGatewayToHost, CalvinHostToGatewayV4 } from "../../host-protocol/frames.js";
 import { type CalvinPerson, personForMember } from "../../host-protocol/person.js";
 import type { SessionSecret } from "../../host-protocol/secrets.js";
 import { sessionKey } from "../../host-protocol/session-key.js";
@@ -102,13 +106,15 @@ export interface ApiRow {
   activeTurnId: string | null;
   /** The session's role (`RoleSpec` as JSON), from `start`. */
   role: string | null;
+  /** The agent's conversation id, as the runner last reported it: a runner started without it begins a new, empty conversation. */
+  sdkSessionId: string | null;
 }
 
 const ROW_SELECT = `SELECT runner_key AS key, session_id AS sessionId, team_id AS teamId, channel_id AS channelId,
   thread_ts AS threadTs, owner_id AS ownerId, owner_user_id AS ownerUserId, owner_name AS ownerName,
   owner_email AS ownerEmail, title, mode, model, effort, speed, status, origin_type AS originType,
   origin_client AS originClient, metadata, created_at AS createdAt, updated_at AS updatedAt,
-  active_turn_id AS activeTurnId, role FROM sessions`;
+  active_turn_id AS activeTurnId, role, sdk_session_id AS sdkSessionId FROM sessions`;
 
 /**
  * Columns work 084 adds to `sessions` (lifecycle.ts's pattern: added when missing). Objects from before
@@ -247,6 +253,7 @@ export class ComputerSessionsApi {
       ...(isSpeed(row.speed) ? { speed: row.speed } : {}),
       metadata: parseMetadata(row.metadata),
       ...(row.role ? { role: JSON.parse(row.role) as CalvinRoleSpec } : {}),
+      ...(row.sdkSessionId ? { sdkSessionId: row.sdkSessionId } : {}),
     };
     if (row.originType !== "slack") {
       return {
@@ -296,7 +303,7 @@ export class ComputerSessionsApi {
           : { id: null, name: null, kind: "login", scopes: caller.principal.scopes, expiresAt: null, createdAt: null },
         computer: { status: this.deps.computerStatus(), region: null, wireUrl: this.deps.env.WIRE_PUBLIC_URL || null },
         defaults: { model: MODELS[0]!.id, effort: null, mode: DEFAULT_MODE, speed: null },
-        capabilities: capabilities(),
+        capabilities: capabilities(attachmentsOf(this.deps.env) !== null),
       },
     };
   }
@@ -535,7 +542,9 @@ export class ComputerSessionsApi {
       }
     }
     const secrets = this.deps.secretsFor && (await this.deps.secretsFor(row));
-    const body = entry.body && typeof entry.body === "object" ? (entry.body as Record<string, unknown>) : {};
+    // A turn's attachments (work 126) ride beside `params`, not in them: the runner reads the frame's own
+    // `attachments` and takes an unknown field in `params` as `invalid_request`.
+    const { attachments, ...body } = entry.body && typeof entry.body === "object" ? (entry.body as Record<string, unknown>) : {};
     const method = DRAIN_METHODS[entry.kind];
     const dims = { ...dispatchOf(entry), session_key: row.key, method };
     let sentAt: number | undefined;
@@ -550,6 +559,7 @@ export class ComputerSessionsApi {
       method: DRAIN_METHODS[entry.kind],
       // One turn id end to end (spec 40.2): the entry's id is the turn's in the log. An id the host would not take is left to it.
       params: { ...body, sessionId: row.sessionId, ...(entry.kind === "turn" && isId("tn", entry.id) ? { turnId: entry.id } : {}) },
+      ...(Array.isArray(attachments) && attachments.length ? { attachments: attachments as CalvinApiAttachment[] } : {}),
       actor: { id: entry.actor.subject, name: null, via: entry.actor.via, client: null },
       member: entry.actor.subject,
       idempotencyKey: entry.id,

@@ -1,7 +1,8 @@
 // What a session may use (work 084; objects.mdx#capabilities): models, efforts, permission modes
 // and features. Nobody downstream validates a model or mode (calvin passes them to the harness),
-// so blue owns this list and checks create and PATCH against it. Static: it changes with a
-// release, not per request, so reads are free. The organization's default model is the first.
+// so blue owns this list and checks create and PATCH against it. Static but for `attachments`
+// (the deployment's store): it changes with a release, not per request, so reads are free. The
+// organization's default model is the first.
 
 import type { CalvinMode } from "../host-protocol/session.js";
 
@@ -16,7 +17,7 @@ export interface CapabilityModel {
 export interface Capabilities {
   models: CapabilityModel[];
   modes: string[];
-  features: { steer: boolean; compact: boolean; terminal: boolean; workspace: boolean; reasoning: boolean; subagents: boolean };
+  features: { steer: boolean; compact: boolean; terminal: boolean; workspace: boolean; reasoning: boolean; subagents: boolean; attachments: boolean };
 }
 
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
@@ -26,7 +27,7 @@ export const MODELS: readonly CapabilityModel[] = [
   { id: "claude-opus-5-5", name: "Claude Opus 5.5", efforts: EFFORTS, contextWindow: 1_000_000, default: true },
   { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", efforts: EFFORTS, contextWindow: 1_000_000, default: false },
   { id: "claude-haiku-5-5", name: "Claude Haiku 5.5", efforts: ["low", "medium", "high"], contextWindow: 200_000, default: false },
-  { id: "claude-fable-5-1", name: "Claude Fable 5.1", efforts: EFFORTS, contextWindow: 1_000_000, default: false },
+  { id: "claude-fable-5-2", name: "Claude Fable 5.2", efforts: EFFORTS, contextWindow: 1_000_000, default: false },
   { id: "gpt-6.2-sol", name: "GPT-6.2 Sol (Codex)", efforts: ["low", "medium", "high", "xhigh"], contextWindow: 400_000, default: false },
   { id: "gpt-6.2-astra", name: "GPT-6.2 Astra (Codex)", efforts: ["low", "medium", "high", "xhigh"], contextWindow: 400_000, default: false },
   { id: "gpt-6.1-sol", name: "GPT-6.1 Sol (Codex)", efforts: ["low", "medium", "high", "xhigh"], contextWindow: 400_000, default: false },
@@ -40,11 +41,13 @@ export const DEFAULT_MODE: CalvinMode = "bypassPermissions";
 const CAPABILITIES: Capabilities = {
   models: MODELS.map((m) => ({ ...m, efforts: [...m.efforts] })),
   modes: [...MODES],
-  features: { steer: true, compact: true, terminal: true, workspace: true, reasoning: true, subagents: true },
+  features: { steer: true, compact: true, terminal: true, workspace: true, reasoning: true, subagents: true, attachments: true },
 };
+const WITHOUT_ATTACHMENTS: Capabilities = { ...CAPABILITIES, features: { ...CAPABILITIES.features, attachments: false } };
 
-export function capabilities(): Capabilities {
-  return CAPABILITIES;
+/** `attachments`: whether the deployment has a store for them (work 126); a client hides the paperclip without one. */
+export function capabilities(attachments = true): Capabilities {
+  return attachments ? CAPABILITIES : WITHOUT_ATTACHMENTS;
 }
 
 /** The modes a plan approval's answer may switch to (calvin asks.ts PLAN_EXIT_MODES). */

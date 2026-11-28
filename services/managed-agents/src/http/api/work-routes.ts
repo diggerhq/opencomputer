@@ -13,7 +13,7 @@ import { PATH_ID, type Route } from "./route-table.js";
 const reset = (out: Reply, message: string) => out.error(409, "reset", message, { cursor: null });
 
 /** A mutation's reply (spec 37.3): 200 with `protocol`, or its error with the status of spec 34.2. */
-function mutateReplyOf(out: Reply, r: MutateReply): Response {
+export function mutateReplyOf(out: Reply, r: MutateReply): Response {
   if ("error" in r) {
     const { code, message, ...extra } = r.error;
     return out.error(statusOf(code), code, message ?? `Refused: ${code}.`, extra);

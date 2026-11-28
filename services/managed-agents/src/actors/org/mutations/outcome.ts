@@ -1,6 +1,7 @@
 // The mutation function's shape and its answers (see index.ts).
 
 import type { Principal } from "../../../auth/principal.js";
+import type { EdgeFacts } from "../contract.js";
 import type { Tx } from "../tx.js";
 
 export type MutationRefusal = {
@@ -11,7 +12,8 @@ export type MutationRefusal = {
   [field: string]: unknown;
 };
 export type MutationOutcome = { ok: true; value?: unknown } | MutationRefusal;
-export type MutationFn = (tx: Tx, p: Principal, args: Record<string, unknown>) => MutationOutcome;
+/** `edge`: what the edge knows and a body cannot claim (the person's name, what GitHub did). */
+export type MutationFn = (tx: Tx, p: Principal, args: Record<string, unknown>, edge: EdgeFacts) => MutationOutcome;
 
 export const applied = (value?: unknown): MutationOutcome => (value === undefined ? { ok: true } : { ok: true, value });
 export const refuse = (code: MutationRefusal["code"], reason: string = code, more: Record<string, unknown> = {}): MutationRefusal => ({ ...more, ok: false, code, reason });
