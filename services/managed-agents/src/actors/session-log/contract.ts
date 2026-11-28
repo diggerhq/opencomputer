@@ -84,9 +84,29 @@ export interface EventsQuery {
   tailTurns?: number;
 }
 
+/** The events read backward (spec 37.1): the last `last` events of the log, or with `before` the ones that end at it. */
+export interface EventsBeforeQuery {
+  last: number;
+  /** An events cursor: the place the page ends at. A place reads either way, so one from any page or frame serves. */
+  before?: string;
+  turnId?: string;
+  types?: string[];
+  minSeq?: number;
+}
+
 export type EventsPage =
   /** `cursor`: after the last event returned, or the one given when there is none. */
   | { ok: true; events: ApiEvent[]; cursor: string; lastSeq: number; hasMore: boolean; earlierTurns?: Turn[]; syncedAt: string | null }
+  | EventsReset
+  | LogReadRefusal;
+
+export type EventsBeforePage =
+  /**
+   * Events ascending, as in every page. `cursor`: the place the page ends at, the log's end or `before`.
+   * `prevCursor`: before the first event returned, or `cursor` when there is none. `hasMoreBefore`: events the query
+   * matches lie before it.
+   */
+  | { ok: true; events: ApiEvent[]; cursor: string; prevCursor: string; hasMoreBefore: boolean; lastSeq: number; syncedAt: string | null }
   | EventsReset
   | LogReadRefusal;
 
@@ -210,6 +230,7 @@ export interface SessionLogRpc {
    */
   summary(minSeq: number | undefined, p: Principal): Promise<{ ok: true; summary: Summary } | LogReadRefusal>;
   events(query: EventsQuery, p: Principal): Promise<EventsPage>;
+  eventsBefore(query: EventsBeforeQuery, p: Principal): Promise<EventsBeforePage>;
   turns(query: TurnsQuery, p: Principal): Promise<TurnsPage>;
   turn(turnId: string, query: TurnQuery, p: Principal): Promise<TurnResult>;
   asks(query: AsksQuery, p: Principal): Promise<AsksPage>;

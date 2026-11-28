@@ -1,7 +1,7 @@
 import type { StoreApi } from 'zustand/vanilla'
 import type { Client, Delta, EventsUpdate } from '@opencomputer/sdk/computer'
 import { EMPTY_CONVO, type Convo, type State } from './surface-state'
-import type { OpenBlock } from './transcript'
+import { buildTranscript, type OpenBlock } from './transcript'
 
 // The conversations the panes show: each session's events and the text still
 // streaming, read while a pane watches it.
@@ -18,13 +18,35 @@ export function watchConversations({
   const get = store.getState
   const set = store.setState
 
+  // A conversation is first drawn once its window makes a viewport of rows
+  // (work 139, 7.1): a settled turn folds to a line or two, so the last events
+  // of a long turn can be very few rows. Until then the pages before the
+  // window are read, at most FILL of them. Only the surface knows how many
+  // rows events make, so the rule is here and not in the API.
+  const FILL = 3
+  const viewport = () => Math.ceil(((globalThis as { innerHeight?: number }).innerHeight ?? 1200) / 40)
+  const asked = new Map<string, number>()
+  const enough = (sid: string, events: Convo['events'], hasEarlier: boolean) =>
+    !hasEarlier || (asked.get(sid) ?? 0) >= FILL || buildTranscript(events).length >= viewport()
+  const reading = new Set<string>()
+  const fill = (sid: string) => {
+    if (get().convos[sid]?.loaded !== false || reading.has(sid)) return
+    reading.add(sid)
+    asked.set(sid, (asked.get(sid) ?? 0) + 1)
+    void client.earlier(sid).then(() => {
+      reading.delete(sid)
+      patchConvo(sid, (c) => (c.loaded || !enough(sid, c.events, c.hasEarlier) ? c : { ...c, loaded: true }))
+      fill(sid)
+    })
+  }
+
   const watching = new Map<string, { n: number; started: boolean; stop: () => void }>()
   const patchConvo = (sid: string, fn: (c: Convo) => Convo) => {
     const convos = get().convos
     const next = fn(convos[sid] ?? EMPTY_CONVO)
     if (next !== convos[sid]) set({ convos: { ...convos, [sid]: next } })
   }
-  const onEvents = (sid: string, u: EventsUpdate) =>
+  const onEvents = (sid: string, u: EventsUpdate) => {
     patchConvo(sid, (c) => {
       let events = c.events
       if (u.reset) events = u.reset.seq === null ? [] : events.filter((e) => e.seq <= u.reset!.seq!)
@@ -39,8 +61,15 @@ export function watchConversations({
       }
       // The block that was streaming has arrived whole, or its turn is over.
       const closes = u.events.some((e) => e.type === 'message.completed' || e.type.startsWith('turn.'))
-      return { events, loaded: true, open: closes || u.reset ? null : c.open }
+      return {
+        events,
+        hasEarlier: u.hasEarlier,
+        loaded: c.loaded || (!reading.has(sid) && enough(sid, events, u.hasEarlier)),
+        open: closes || u.reset ? null : c.open,
+      }
     })
+    fill(sid)
+  }
 
   // Deltas are applied at most every 50 ms (spec 26.4).
   const buffered = new Map<string, OpenBlock | null>()
@@ -75,7 +104,7 @@ export function watchConversations({
   const begin = (sid: string) => {
     const w = watching.get(sid)
     if (!w || w.started || !onServer(sid)) return
-    const a = client.events(sid, { tailTurns: 30 }).subscribe((u) => onEvents(sid, u))
+    const a = client.events(sid).subscribe((u) => onEvents(sid, u))
     const b = client.deltas(sid).subscribe((d) => onDelta(sid, d))
     w.started = true
     w.stop = () => (a(), b())
@@ -102,5 +131,14 @@ export function watchConversations({
     }
   }
 
-  return { watching, begin, watch }
+  // Reading ahead (work 139, 7.4): a thread nobody is looking at yet gets its
+  // window read into the store, without following, so it opens drawn in its
+  // first frame. Opening it tops the window up.
+  const ahead = async (sid: string): Promise<void> => {
+    if (watching.has(sid) || get().convos[sid] || !onServer(sid)) return
+    const u = await client.prefetch(sid)
+    if (u && !watching.has(sid) && !get().convos[sid]) onEvents(sid, u)
+  }
+
+  return { watching, begin, watch, ahead, earlier: (sid: string) => client.earlier(sid) }
 }

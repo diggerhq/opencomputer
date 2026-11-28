@@ -71,6 +71,11 @@ const withoutSlackHeader = (text: string | null): string | null =>
 // Something else between (an ask, a subagent) closes the turn's segment, so
 // what the agent said before it stays beside it, and a new segment begins.
 //
+// An item is created, keyed and placed by its first event; later events only
+// update it (work 139). So the events may be the log's end, starting anywhere:
+// what is built from them is the end of what the whole log builds, and the
+// events before them, arriving later, add items above and move none.
+//
 // `me`: the person looking. `open`: the text still streaming, drawn as the
 // message it will become, under the same key.
 export function buildTranscript(events: readonly ApiEvent[], me?: string, open?: OpenBlock | null): Item[] {
@@ -206,13 +211,15 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string, open?:
       case 'tool.failed': {
         // A subagent's steps are its own; other nested calls are not shown.
         const sub = subs.get(str(d.subagentId) ?? '')
-        if (!sub && d.parentCallId) break
+        if (!sub && (d.parentCallId || d.subagentId)) break
         const callId = str(d.callId) ?? e.id
         const status = e.type === 'tool.started' ? 'running' : e.type === 'tool.completed' ? 'done' : 'failed'
         if (!sub && status === 'running') running.set(callId, { title: str(d.title) ?? str(d.toolName) ?? 'Tool', since: e.createdAt, turnId: e.turnId ?? '' })
         else running.delete(callId)
         let step = steps.get(callId)
         if (step) step.status = status
+        // A call that began before these events belongs to an item above them.
+        else if (status !== 'running') break
         else {
           step = { kind: 'step', key: `step-${callId}`, title: str(d.title) ?? str(d.toolName) ?? 'Tool', status }
           steps.set(callId, step)
@@ -236,7 +243,7 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string, open?:
             seen.activity = null
             for (const s of seen.steps) if (s.status === 'running') s.status = 'done'
           }
-        } else {
+        } else if (e.type === 'subagent.started') {
           const item: Sub = { kind: 'subagent', key: `sa-${a.id}`, sub: a, steps: [], activity: a.activity ?? null, at: e.createdAt }
           subs.set(a.id, item)
           items.push(item)
@@ -249,7 +256,7 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string, open?:
         if (!ask) break
         const seen = asks.get(ask.id)
         if (seen) seen.ask = ask
-        else {
+        else if (e.type === 'ask.opened') {
           const item = { kind: 'ask' as const, key: `ask-${ask.id}`, ask, at: e.createdAt }
           asks.set(ask.id, item)
           items.push(item)

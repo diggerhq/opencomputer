@@ -28,7 +28,11 @@ const FAKE_ALLOWED = import.meta.env.DEV || import.meta.env.VITE_PREVIEW === '1'
 async function makeHost(fake: string | null, email?: string): Promise<Host> {
   if (FAKE_ALLOWED && (fake !== null || import.meta.env.VITE_PREVIEW === '1')) {
     const { demoHost } = await import('./host-demo')
-    return demoHost({ base: BASE, empty: fake === 'empty' })
+    return demoHost({
+      base: BASE,
+      empty: fake === 'empty',
+      long: fake === 'long' || fake === 'tools' ? fake : undefined,
+    })
   }
   // The principal as the server names it (`usr_…`, not the dashboard's user
   // id): every feed frame carries it, and the client drops frames that differ.

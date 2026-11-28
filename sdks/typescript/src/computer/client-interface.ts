@@ -131,6 +131,8 @@ export interface EventsUpdate {
   events: ApiEvent[];
   /** Drop the events held above `seq` (all of them when null) before applying `events`. */
   reset?: { seq: number | null };
+  /** Events exist before the first one held: `earlier()` reads them. */
+  hasEarlier: boolean;
 }
 
 export interface Client {
@@ -142,7 +144,18 @@ export interface Client {
    * `from: null`; any later frame with `from: null` (a snapshot after `reset`) replaces every row.
    */
   feed(kinds: string[]): Stream<FeedFrame>;
-  events(sessionId: string, o?: { tailTurns?: number }): Stream<EventsUpdate>;
+  /**
+   * A window on the end of the session's log: its last events, with no gaps. The first value is the
+   * whole window, as one update with `reset: { seq: null }`; later ones are the changes to it.
+   */
+  events(sessionId: string): Stream<EventsUpdate>;
+  /** Extends the window back by one page; `events()` tells what it read. Calls made while one runs share it. */
+  earlier(sessionId: string): Promise<void>;
+  /**
+   * Reads the window as `events()` does, without following it, so a later `events()` has it at once.
+   * Resolves with the window, as the update a first subscriber would get, or null when it could not be read.
+   */
+  prefetch(sessionId: string): Promise<EventsUpdate | null>;
   deltas(sessionId: string): Stream<Delta>;
   mutate<N extends MutationName>(name: N, args: MutationArgs[N]): { settled: Promise<void> };
   createSession(body: CreateSessionBody): { id: string; turnId: string; settled: Promise<void> };

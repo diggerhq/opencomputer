@@ -5,3 +5,7 @@ dist
 # impeccable critique snapshots (local backlog)
 .impeccable/
 dist-desktop/
+
+# Playwright
+test-results/
+playwright-report/

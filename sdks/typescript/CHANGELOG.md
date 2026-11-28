@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.4.0
+
+- `@opencomputer/sdk/computer`: `events(sessionId)` is a window on the end of
+  the session's log. Its first value is the last 200 events, read in one
+  request and told in one update with `reset: { seq: null }`, however long
+  the log is; it was the last 20 turns, read and told a page at a time.
+  Every `EventsUpdate` carries `hasEarlier`.
+- New `earlier(sessionId)`: extends the window back by a page of up to 500
+  events, told through `events()`. Calls made while one runs share it.
+- New `prefetch(sessionId)`: reads the window without following it, so a
+  later `events()` has it at once. It resolves with the window, or null when
+  it could not be read.
+- A reader more than 500 events behind, or reset below everything it holds,
+  is given the log's end again in one update instead of reading its way
+  there.
+- Changed: `events()` no longer takes `tailTurns`. A subscriber that joins a
+  window already held gets it with `reset: { seq: null }`.
+- With `keepEvents`, the window's older edge is kept in `ev/<session>/prev`;
+  events kept by an earlier version without it are read again.
+
 ## 3.3.0
 
 - `@opencomputer/sdk/computer`: files attached to a message.

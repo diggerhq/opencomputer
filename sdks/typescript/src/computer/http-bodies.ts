@@ -42,6 +42,17 @@ export interface EventPage {
   earlierTurns?: unknown[] | null;
 }
 
+/** `GET /sessions/{id}/events?last=<n>&before=<cursor>`: the events that end at a place, ascending. */
+export interface EventPageBefore {
+  events: ApiEvent[];
+  lastSeq: number;
+  /** The place the page ends at: the log's end, or `before`. */
+  cursor: string;
+  /** The place before the first event returned. */
+  prevCursor: string;
+  hasMoreBefore: boolean;
+}
+
 /** `GET /work/threads?earlier&track&before&limit`. */
 export interface ThreadsPage {
   rows: (SessionRow | PlaceRow | ResultRow)[];

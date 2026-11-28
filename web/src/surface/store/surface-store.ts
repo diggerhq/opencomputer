@@ -157,6 +157,26 @@ export function createSurface(o: SurfaceOptions) {
     })
     for (const sid of watching.keys()) begin(sid)
     recompose()
+    if (!frame.more) framed = true
+    aheadOfMarked()
+  }
+  // The feed has arrived: the threads with a mark are the ones most likely
+  // opened next, so their conversations are read ahead, newest first, one
+  // after another (work 139, 7.4).
+  const AHEAD = 10
+  let framed = false
+  let wentAhead = false
+  const aheadOfMarked = () => {
+    if (wentAhead || !framed || !get().synced) return
+    wentAhead = true
+    void readAhead()
+  }
+  const readAhead = async () => {
+    const l = list()
+    const marked = [...l.threads, ...l.tracks.flatMap((k) => k.threads)]
+      .filter((t) => t.mark)
+      .sort((a, b) => (a.session.lastActiveAt < b.session.lastActiveAt ? 1 : a.session.lastActiveAt > b.session.lastActiveAt ? -1 : 0))
+    for (const t of marked.slice(0, AHEAD)) await ahead(t.id)
   }
 
   // ---- what follows a change: reading, notifying, staying somewhere real ----
@@ -374,7 +394,7 @@ export function createSurface(o: SurfaceOptions) {
 
   // ---- conversations ----
 
-  const { watching, begin, watch } = watchConversations({ client, store, onServer })
+  const { watching, begin, watch, earlier, ahead } = watchConversations({ client, store, onServer })
 
   // ---- start ----
 
@@ -388,6 +408,7 @@ export function createSurface(o: SurfaceOptions) {
       client.status.subscribe((status) => {
         set({ status })
         if (status === 'online') set({ synced: true })
+        aheadOfMarked()
       }),
     )
     dropUnknown(client.attachments().get())
@@ -725,6 +746,9 @@ export function createSurface(o: SurfaceOptions) {
     list,
     thread: (sid: string) => threadView(get().rows, me, sid),
     watch,
+    // One page of the events before a conversation's window (work 139).
+    earlier,
+    ahead,
     ...actions,
     close() {
       for (const stop of stops) stop()

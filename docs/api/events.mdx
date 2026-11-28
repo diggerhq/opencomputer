@@ -31,8 +31,28 @@ The result is `events`, `cursor` (after the last event returned, or the one sent
 | --- | --- | --- |
 | `409 reset` | `after` is not a cursor of this session's events (a bare `seq` included), or its position no longer exists: past the journal's end, or the journal was rebuilt | The error carries `cursor` and may carry `seq`. Drop held events above `seq` and read on from `cursor`; with `cursor: null`, start again without `after` |
 
+## Read from the end
+
+A long session has tens of thousands of events. To show where it stands now, read its end and go back only as far as needed:
+
+```
+GET /sessions/cs_0123456789abcdef/events?last=200
+GET /sessions/cs_0123456789abcdef/events?last=200&before=<prevCursor>
+```
+
+| Param | Meaning |
+| --- | --- |
+| `last` | 1 to 500 events: the last ones of the journal, or with `before` the last ones before it. Cannot be combined with `after`, `limit` or `tailTurns` |
+| `before` | The `prevCursor` of the previous page: return the events before it. Sent with `last` |
+
+`turnId` and `types` apply as above, and `last` then counts matching events.
+
+The result is `events` in ascending `seq`, `cursor`, `prevCursor`, `hasMoreBefore` and `lastSeq`; there is no `hasMore`. `cursor` is where the page ends (the journal's end, or `before`): send it as `after` to read on, or to subscribe on Live. `prevCursor` is where the page starts: send it as the next `before` while `hasMoreBefore` is true. A page can start in the middle of a turn.
+
+`before` is refused like `after`: `409 reset`, with the same fields.
+
 ## Follow live
 
 Subscribe to `events:<id>` on [Live](/api/live) with the last cursor. Live pushes each new range of events; a client reads over HTTP whenever a pushed range does not start at its cursor. Deltas (`deltas:<id>`) carry text and tool output as they are written: no `seq`, not stored, not replayed, and each block is followed by an event with the whole text (`message.completed`, `reasoning.completed`, `tool.completed`). Types: [API schema](/reference/api-schema#deltas).
 
-{/* Sources: computer/schema/computer-api.v1.json (Event, Delta); services/managed-agents/src/http/api/session-routes.ts (events.list, reset on an unreadable cursor); services/managed-agents/src/actors/session-log/durable-object.ts (events, afterCursor); services/managed-agents/src/http/api/reply.ts (reset); services/managed-agents/src/actors/live/contract.ts; computer/src/api/schema-events.ts (DELTA_DATA); computer/src/api/schema-objects.ts (Actor) */}
+{/* Sources: computer/schema/computer-api.v1.json (Event, Delta); services/managed-agents/src/http/api/session-routes.ts (events.list, reset on an unreadable cursor); services/managed-agents/src/actors/session-log/durable-object.ts (events, eventsBefore, afterCursor); services/managed-agents/src/http/api/reply.ts (reset); services/managed-agents/src/actors/live/contract.ts; computer/src/api/schema-events.ts (DELTA_DATA); computer/src/api/schema-objects.ts (Actor) */}

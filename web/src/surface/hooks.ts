@@ -35,9 +35,13 @@ export const useOpenTrackId = (): string | null =>
 export interface Conversation {
   // With the reply being written, as the message it will be.
   items: Item[]
-  // False only for a conversation never seen on this device.
+  // False until there is enough of it to draw: nothing is drawn in parts (work 139).
   loaded: boolean
+  // Events exist before the first one held: `surface.earlier` reads a page of them.
+  hasEarlier: boolean
   working: boolean
+  // The session has a row: its conversation exists to be read.
+  known: boolean
 }
 
 const NO_EVENTS: never[] = []
@@ -54,24 +58,32 @@ export function useConversation(sid: string | null, trackId?: string): Conversat
   const ops = useS((s) => s.rows.op)
   // A track's threads are drawn where they joined it.
   const places = useS((s) => (trackId ? s.rows.place : null))
-  const events = convo?.events ?? NO_EVENTS
+  const loaded = convo?.loaded ?? false
+  const hasEarlier = convo?.hasEarlier ?? false
+  const events = (loaded && convo?.events) || NO_EVENTS
   const open = convo?.open ?? null
   const items = useMemo(() => {
     if (!sid) return []
     const rows = surface.get().rows
+    // Structural lines are placed by time, so those older than the window
+    // wait for the events they belong between.
+    const from = hasEarlier ? events[0]?.createdAt : undefined
+    const held = (i: Item) => loaded && (!from || i.at >= from)
     const lines = opLines(ops.values(), trackId ? { trackId } : { sessionId: sid }, {
       track: (id) => rows.track.get(id)?.name ?? 'a track',
       thread: (id) => rows.session.get(id)?.title ?? 'A thread',
       me: `user:${surface.me}`,
     })
     const base = buildTranscript(events, surface.me, open)
-    const extra = trackId ? [...lines, ...joined(rows, ops.values(), trackId)] : lines
+    const extra = (trackId ? [...lines, ...joined(rows, ops.values(), trackId)] : lines).filter(held)
     const merged = extra.length ? group([...base, ...extra].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0))) : base
     return [...merged, ...unsent(events, pending, session?.inbox ?? NO_EVENTS, sid, attachments)]
-  }, [surface, sid, trackId, events, open, pending, attachments, session?.inbox, ops, places])
+  }, [surface, sid, trackId, events, loaded, hasEarlier, open, pending, attachments, session?.inbox, ops, places])
   return {
     items,
-    loaded: convo?.loaded ?? false,
+    loaded,
+    hasEarlier,
+    known: !!session,
     working: session?.status === 'running' || session?.status === 'starting',
   }
 }

@@ -3,7 +3,7 @@ import {
   useVirtualizer,
   type Range,
 } from '@tanstack/react-virtual'
-import { useCallback, useRef, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, type ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
@@ -25,9 +25,25 @@ const FOLD =
   'text-faint hover:bg-row-hover hover:text-muted-foreground flex w-full rounded-md py-1 pr-2 text-left text-meta outline-none focus-visible:bg-row-hover'
 const WH = 'text-faint flex-none text-xs tabular-nums'
 
+// The pointer or the focus resting on a thread's row reads its conversation
+// ahead, so opening it draws at once (work 139, 7.4).
+const REST = 100
+function useRest(sid: string) {
+  const surface = useSurface()
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  useEffect(() => () => clearTimeout(timer.current), [])
+  const on = () => {
+    clearTimeout(timer.current)
+    timer.current = setTimeout(() => void surface.ahead(sid), REST)
+  }
+  const off = () => clearTimeout(timer.current)
+  return { onPointerEnter: on, onPointerLeave: off, onFocus: on, onBlur: off }
+}
+
 function ThreadRow({ t, kid }: { t: ThreadView; kid?: boolean }) {
   const surface = useSurface()
   const sel = useS((s) => s.loc.thread === t.id)
+  const rest = useRest(t.id)
   return (
     <button
       className={cn(ROW, kid && 'pl-7')}
@@ -35,6 +51,7 @@ function ThreadRow({ t, kid }: { t: ThreadView; kid?: boolean }) {
       data-sel={sel || undefined}
       data-mark={t.mark ?? ''}
       onClick={() => surface.openThread(t.id)}
+      {...rest}
     >
       <Mk mark={t.mark} />
       <span
@@ -60,12 +77,14 @@ function ThreadRow({ t, kid }: { t: ThreadView; kid?: boolean }) {
 function OldRow({ t }: { t: ThreadView }) {
   const surface = useSurface()
   const sel = useS((s) => s.loc.thread === t.id)
+  const rest = useRest(t.id)
   return (
     <button
       className={cn(ROW, 'text-muted-foreground pl-[25px]')}
       data-nav={`thread:${t.id}`}
       data-sel={sel || undefined}
       onClick={() => surface.openThread(t.id)}
+      {...rest}
     >
       <span className="min-w-0 flex-1 truncate">{t.title}</span>
       <span className={WH}>

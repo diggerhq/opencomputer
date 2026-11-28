@@ -58,6 +58,8 @@ import {
   type AsksQuery,
   EPOCH_TAIL_MAX,
   type EpochTail,
+  type EventsBeforePage,
+  type EventsBeforeQuery,
   type EventsPage,
   type EventsQuery,
   type LogReadRefusal,
@@ -234,6 +236,22 @@ function byteLength(text: string): number {
 
 const clamp = (value: number | undefined, fallback: number, min: number, max: number) =>
   value === undefined || !Number.isFinite(value) ? fallback : Math.min(max, Math.max(min, Math.floor(value)));
+
+/** An events read's turn and type conditions, as SQL to follow the `seq` one, with their values. */
+function eventsFilter(query: Pick<EventsQuery, "turnId" | "types">): { where: string; params: SqlStorageValue[] } {
+  const where: string[] = [];
+  const params: SqlStorageValue[] = [];
+  if (query.turnId) where.push("turn_id = ?"), params.push(query.turnId);
+  if (query.types?.length) {
+    const exact = query.types.filter((t) => !t.endsWith("*"));
+    const prefixes = query.types.filter((t) => t.endsWith("*")).map((t) => t.slice(0, -1));
+    const any: string[] = [];
+    if (exact.length) any.push(`type IN (${exact.map(() => "?").join(", ")})`), params.push(...exact);
+    for (const p of prefixes) any.push("substr(type, 1, ?) = ?"), params.push(p.length, p);
+    where.push(`(${any.join(" OR ")})`);
+  }
+  return { where: where.map((w) => `AND ${w}`).join(" "), params };
+}
 
 const turnOfRow = (row: TurnRow): TurnRecord => ({
   // Rows written before `trigger` existed get its defaults.
@@ -1165,33 +1183,53 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
       from = start ?? 1;
     }
 
-    const where: string[] = ["seq >= ?"];
-    const params: SqlStorageValue[] = [from];
-    if (query.turnId) where.push("turn_id = ?"), params.push(query.turnId);
-    if (query.types?.length) {
-      const exact = query.types.filter((t) => !t.endsWith("*"));
-      const prefixes = query.types.filter((t) => t.endsWith("*")).map((t) => t.slice(0, -1));
-      const any: string[] = [];
-      if (exact.length) any.push(`type IN (${exact.map(() => "?").join(", ")})`), params.push(...exact);
-      for (const p of prefixes) any.push("substr(type, 1, ?) = ?"), params.push(p.length, p);
-      where.push(`(${any.join(" OR ")})`);
-    }
-    const statement = `SELECT * FROM events WHERE ${where.join(" AND ")} ORDER BY seq LIMIT ?`;
-    params.push(limit + 1);
-
-    let rows = this.sql.exec<EventRow>(statement, ...params).toArray();
+    const { where, params } = eventsFilter(query);
+    let rows = this.sql.exec<EventRow>(`SELECT * FROM events WHERE seq >= ? ${where} ORDER BY seq LIMIT ?`, from, ...params, limit + 1).toArray();
     const hasMore = rows.length > limit;
     if (hasMore) rows = rows.slice(0, limit);
+    // The page's place in the log is read with its rows: an append during `inflate` is not in it.
+    const { logEpoch, ack, syncedAt } = this.meta;
     const page: EventsPage = {
       ok: true,
       events: await this.inflate(rows),
-      lastSeq: this.meta.ack,
+      lastSeq: ack,
       hasMore,
-      syncedAt: this.meta.syncedAt,
-      cursor: rows.length ? cursor.encode("e", [this.meta.logEpoch, rows.at(-1)!.seq]) : given,
+      syncedAt,
+      cursor: rows.length ? cursor.encode("e", [logEpoch, rows.at(-1)!.seq]) : given,
     };
     if (earlierTurns) page.earlierTurns = earlierTurns;
     return page;
+  }
+
+  /** The events read backward (spec 37.1): the `last` events that end at `before`, or at the log's end. */
+  async eventsBefore(query: EventsBeforeQuery, p: Principal): Promise<EventsBeforePage> {
+    const refused = await this.admit(query.minSeq, p);
+    if (refused) return refused;
+    const { logEpoch, ack, syncedAt } = this.meta;
+    let end = ack;
+    if (query.before !== undefined) {
+      // A place is the same one whichever way it is read from, so a `before` is refused as an `after` is.
+      const read = this.afterCursor(query.before);
+      if (read === null) return { ok: false, error: "reset", cursor: null };
+      if (typeof read !== "number") return read;
+      end = read;
+    }
+    const last = clamp(query.last, 1, 1, EVENTS_MAX_LIMIT);
+    const { where, params } = eventsFilter(query);
+    let rows = this.sql.exec<EventRow>(`SELECT * FROM events WHERE seq <= ? ${where} ORDER BY seq DESC LIMIT ?`, end, ...params, last + 1).toArray();
+    const hasMoreBefore = rows.length > last;
+    if (hasMoreBefore) rows = rows.slice(0, last);
+    rows.reverse();
+    const at = (seq: number) => cursor.encode("e", [logEpoch, seq]);
+    return {
+      ok: true,
+      events: await this.inflate(rows),
+      cursor: at(end),
+      prevCursor: at(rows.length ? rows[0]!.seq - 1 : end),
+      hasMoreBefore,
+      lastSeq: ack,
+      syncedAt,
+    };
   }
 
   async turns(query: TurnsQuery, p: Principal): Promise<TurnsPage> {

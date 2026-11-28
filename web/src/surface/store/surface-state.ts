@@ -22,8 +22,11 @@ export interface Toast {
 }
 
 export interface Convo {
+  // The end of the session's log: a window with no gaps (work 139).
   events: ApiEvent[]
-  // The first page has arrived (from storage or the server).
+  // Events exist before the first one held.
+  hasEarlier: boolean
+  // There is enough to draw: a viewport of rows, or all there is.
   loaded: boolean
   // Text still streaming; never stored (spec 26.4).
   open: OpenBlock | null
@@ -98,7 +101,7 @@ export const KEPT: (keyof Kept)[] = [
 ]
 
 export const NO_COUNTS: Counts = { earlier: 0, trackEarlier: {} }
-export const EMPTY_CONVO: Convo = { events: [], loaded: false, open: null }
+export const EMPTY_CONVO: Convo = { events: [], hasEarlier: false, loaded: false, open: null }
 
 export interface SurfaceOptions {
   host: Host
