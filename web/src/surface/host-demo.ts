@@ -1,7 +1,8 @@
-import type { Channel, ServerFrame } from '@opencomputer/sdk/computer'
+import type { ApiEvent, Channel, ServerFrame } from '@opencomputer/sdk/computer'
 import type { Host } from './host'
 import { browserParts, urlLink, urlLocation } from './host-web'
 import recording from './demo-data.json'
+import { demoLog, readLog, type DemoShape } from './demo-log'
 import { playTurn, type DemoTurn } from './demo-turn'
 
 // The surface over recorded data, to look at without a backend: `?fake` in
@@ -11,7 +12,9 @@ import { playTurn, type DemoTurn } from './demo-turn'
 // write is never answered, so what it shows stays as the surface drew it.
 // A message sent to a thread is the one exception: the thread plays a scripted
 // turn (demo-turn.ts) over the socket, so sending and streaming can be watched.
-// `?fake=empty` is the same organization with nothing in it.
+// `?fake=empty` is the same organization with nothing in it. `?fake=long` and
+// `?fake=tools` make its first thread a long one (demo-log.ts), read in pages
+// the way the server answers them, each after a network's delay.
 
 const replies = recording.replies as Record<string, unknown>
 const json = (status: number, body: unknown) =>
@@ -48,6 +51,23 @@ function reply(path: string, empty: boolean): Response {
     : json(200, recorded)
 }
 
+// The long thread, when there is one: its session and its whole log.
+let long: { sid: string; events: ApiEvent[] } | null = null
+// What a read of the long thread waits, in ms: a round trip.
+const LAG = 60
+
+function read(path: string, empty: boolean): Promise<Response> {
+  const url = new URL(path, 'http://demo')
+  const log = long
+  if (!log || url.pathname !== `/sessions/${log.sid}/events`)
+    return Promise.resolve(reply(path, empty))
+  // A mark per read, for a trace of what opening a thread asked for.
+  performance.mark(`demo:read${url.search}`)
+  return new Promise((done) =>
+    setTimeout(() => done(json(200, readLog(log.events, url.searchParams))), LAG),
+  )
+}
+
 // The frame callback of the open socket, for the scripted turn.
 let toSocket: (f: ServerFrame) => void = () => {}
 // Each session's last seq and cursor, as the recording left them and the
@@ -55,6 +75,10 @@ let toSocket: (f: ServerFrame) => void = () => {}
 const logs = new Map<string, { seq: number; cursor: string | null }>()
 const logOf = (sid: string) => {
   let log = logs.get(sid)
+  if (!log && long?.sid === sid) {
+    const seq = long.events.length
+    logs.set(sid, (log = { seq, cursor: `e1.0.${seq}` }))
+  }
   if (!log) {
     const recorded = replies[`/sessions/${sid}/events`] as
       | { cursor: string; events: { seq: number }[] }
@@ -143,8 +167,14 @@ function channel(): Channel {
 export function demoHost(o: {
   base: string
   empty?: boolean
+  long?: DemoShape
   platform?: Host['platform']
 }): Host {
+  const first = (replies['/feed'] as { rows: { kind: string; id: string }[] }).rows.find((r) => r.kind === 'session')
+  long =
+    o.long && first
+      ? { sid: first.id, events: demoLog(first.id, o.long, recording.principal.subject) }
+      : null
   return {
     platform: o.platform ?? 'web',
     principal: recording.principal,
@@ -152,7 +182,7 @@ export function demoHost(o: {
     api: {
       fetch: (path, init) =>
         (init?.method ?? 'GET') === 'GET'
-          ? Promise.resolve(reply(path, !!o.empty))
+          ? read(path, !!o.empty)
           : write(path, init),
     },
     connect: channel,
