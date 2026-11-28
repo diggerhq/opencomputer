@@ -7,6 +7,36 @@ export function pullNumber(r: ResultRow): string | null {
   return r.type === 'pr' ? (/\/pull\/(\d+)/.exec(r.ref)?.[1] ?? null) : null
 }
 
+// A pull request's address, however it was written: with a trailing
+// `/files`, a query or an anchor, in any case.
+function pullKey(url: string): string | null {
+  const m = /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)(?:[/?#]|$)/i.exec(url)
+  return m ? `${m[1]}/${m[2]}/${m[3]}`.toLowerCase() : null
+}
+
+// The reader's pull request results by address, made once per set of rows.
+const byAddress = new WeakMap<ReadonlyMap<string, ResultRow>, Map<string, ResultRow>>()
+
+// The result a link leads to, when it is a pull request the reader has as a
+// result: the link is then drawn as that result, with its state and its next
+// step. Of several threads' results for one pull request, `sid`'s own.
+export function pullAt(results: ReadonlyMap<string, ResultRow>, url: string, sid?: string): ResultRow | undefined {
+  const key = pullKey(url)
+  if (!key) return undefined
+  let index = byAddress.get(results)
+  if (!index) {
+    index = new Map()
+    for (const r of results.values()) {
+      const k = r.type === 'pr' ? pullKey(r.ref) : null
+      if (!k) continue
+      index.set(`${k} ${r.sessionId}`, r)
+      index.set(k, r)
+    }
+    byAddress.set(results, index)
+  }
+  return (sid ? index.get(`${key} ${sid}`) : undefined) ?? index.get(key)
+}
+
 // As long as the server takes a begun merge or revert as under way.
 const UNDER_WAY_MS = 2 * 60_000
 

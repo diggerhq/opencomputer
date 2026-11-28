@@ -29,7 +29,9 @@ import { useTheme } from '@/hooks/useTheme'
 import { cn } from '@/lib/utils'
 import { I } from './icons'
 import { HD, LEFT } from './pane-classes'
-import { resultTitle } from './result-text'
+import { mergeable } from '../store/pulls'
+import { MergeButton } from './MergeButton'
+import { pullState, resultTitle } from './result-text'
 import { Mk } from './Mark'
 import { Rich } from './Rich'
 
@@ -974,6 +976,8 @@ function Changes({ result }: { result: ResultRow }) {
   const files = h.diff?.files
   const parts = useMemo(() => group(h.review, files), [h.review, files])
   const title = resultTitle(result)
+  const state = pullState(result)
+  const merge = mergeable(result)
 
   return (
     <>
@@ -1005,6 +1009,7 @@ function Changes({ result }: { result: ResultRow }) {
         </ToggleGroup>
         <span className="flex-1" />
         <span className={cn(SUB, 'shrink-[99]')}>{title}</span>
+        {state && <span className={cn(SUB, 'flex-none')}>{state}</span>}
         {h.diff && (
           <span className={cn(SUB, 'flex-none tabular-nums')}>
             {filesWord(h.diff.files.length)} ·{' '}
@@ -1022,9 +1027,12 @@ function Changes({ result }: { result: ResultRow }) {
             Open on GitHub
           </Button>
         )}
+        {/* Merging is its own act, not Done: offered first, as in the thread pane. */}
+        <MergeButton result={result} variant="default" size="sm" className={cn(BTN, 'ml-2')} />
         {thread && !thread.done && (
           <Button
             size="sm"
+            variant={merge ? 'outline' : 'default'}
             className={cn(BTN, 'ml-2')}
             onClick={() => {
               // A21: done without leaving the review first; lands on the thread.

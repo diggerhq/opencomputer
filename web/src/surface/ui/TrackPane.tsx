@@ -12,6 +12,7 @@ import { ACTS, BLOCK, COMPOSER, HD, IN, LEFT, MEASURE } from './pane-classes'
 import { resultDetail, resultTitle } from './result-text'
 import { useConfirm } from './use-confirm'
 import { Mk } from './Mark'
+import { MergeButton } from './MergeButton'
 import { ResultIcon } from './ResultIcon'
 import { GROUP, ThreadRow } from './ThreadRows'
 import { Rich } from './Rich'
@@ -519,10 +520,11 @@ function Results({ track }: { track: TrackView }) {
       }}
     >
       <ResultIcon result={r} ring={t?.readyResult === r.id} />
-      {resultTitle(r)}
+      <span className="min-w-0 truncate">{resultTitle(r)}</span>
       <small className="text-faint ml-auto min-w-0 truncate text-xs tabular-nums">
         {resultDetail(r)}
       </small>
+      {t && <MergeButton result={r} className="flex-none" />}
     </div>
   )
   return (

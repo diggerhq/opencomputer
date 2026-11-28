@@ -13,6 +13,7 @@ import { ACTS, BLOCK, COMPOSER, HD, IN } from './pane-classes'
 import { mergeable, pullNumber, refusalOf } from '../store/pulls'
 import { resultDetail, resultTitle } from './result-text'
 import { useConfirm } from './use-confirm'
+import { MergeButton } from './MergeButton'
 import { ResultIcon } from './ResultIcon'
 import { Rich } from './Rich'
 import { Tip } from './Tip'
@@ -217,18 +218,7 @@ function Results({
                   </small>
                 )}
               </Button>
-              {merge && (
-                <Button
-                  variant="secondary"
-                  size="xs"
-                  data-merge
-                  className="border-background rounded-l-none border-l"
-                  title={`Merge #${pullNumber(r)} into its base branch`}
-                  onClick={() => surface.merge(r.id)}
-                >
-                  Merge
-                </Button>
-              )}
+              <MergeButton result={r} className="border-background rounded-l-none border-l" />
             </span>
           )
         })}
