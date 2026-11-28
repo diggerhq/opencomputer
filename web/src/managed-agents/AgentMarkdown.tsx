@@ -216,6 +216,6 @@ function markdownComponents(
         {...props}
       />
     ),
-    td: (props) => <td className={cn('border-b px-3', s.cell)} {...props} />,
+    td: (props) => <td className={cn('border-border/60 border-b px-3', s.cell)} {...props} />,
   }
 }

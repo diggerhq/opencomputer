@@ -34,9 +34,9 @@ export function AccountMenu() {
         <button
           type="button"
           aria-label="Open account menu"
-          className="hover:bg-sidebar-accent focus-visible:ring-ring/50 -ml-1 flex min-w-0 items-center gap-2 rounded-md p-1 text-left outline-none focus-visible:ring-[3px]"
+          className="hover:bg-hover -ml-1 flex min-w-0 items-center gap-2 rounded-md p-1 text-left outline-none focus-visible:focus-ring"
         >
-          <span className="bg-secondary text-foreground flex size-6 flex-none items-center justify-center rounded-full text-xs font-medium">
+          <span className="bg-pressed text-foreground flex size-6 flex-none items-center justify-center rounded-full text-xs font-medium">
             {(who || '?').charAt(0).toUpperCase()}
           </span>
           <span className="truncate">{who.split('@')[0]}</span>

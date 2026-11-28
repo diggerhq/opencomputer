@@ -44,7 +44,7 @@ export function Select({
         id={id}
         data-slot="select-trigger"
         className={cn(
-          'border-input focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-solid focus-visible:outline-ring/70 data-placeholder:text-muted-foreground flex h-8 w-full items-center justify-between gap-2 rounded-md border bg-transparent px-2.5 text-sm transition-colors duration-150 outline-none disabled:cursor-not-allowed disabled:opacity-50',
+          'border-input focus-visible:focus-ring data-placeholder:text-muted-foreground flex h-8 w-full items-center justify-between gap-2 rounded-md border bg-transparent px-2.5 text-sm transition-colors duration-150 outline-none disabled:cursor-not-allowed disabled:opacity-50',
           className,
         )}
       >
@@ -73,7 +73,7 @@ export function Select({
                 <SelectPrimitive.Item
                   key={o.value}
                   value={o.value}
-                  className="focus:bg-row-selected focus:text-accent-foreground relative flex cursor-default items-center rounded-sm py-1.5 pr-8 pl-2 text-meta outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50"
+                  className="focus:bg-row-selected focus:text-accent-foreground relative flex cursor-default items-center rounded-sm py-[5px] pr-8 pl-2 text-meta outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50"
                 >
                   <SelectPrimitive.ItemText>{o.label}</SelectPrimitive.ItemText>
                   {o.hint ? (

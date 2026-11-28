@@ -5,16 +5,16 @@ import { Slot } from 'radix-ui'
 import { cn } from '@/lib/utils'
 
 const buttonVariants = cva(
-  "group/button inline-flex shrink-0 items-center justify-center rounded-md border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,scale] duration-150 ease-snappy outline-none select-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-solid focus-visible:outline-ring/70 active:not-aria-[haspopup]:scale-[0.97] disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "group/button inline-flex shrink-0 items-center justify-center rounded-md border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,scale] duration-150 ease-snappy outline-none select-none focus-visible:focus-ring active:not-aria-[haspopup]:scale-[0.98] disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
         default:
           'bg-primary text-primary-foreground shadow-primary hover:bg-primary/90 disabled:shadow-none disabled:border-border disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100',
         outline:
-          'border-border bg-card shadow-control hover:bg-[color-mix(in_oklab,var(--card),var(--foreground)_4%)] hover:text-foreground active:bg-[color-mix(in_oklab,var(--card),var(--foreground)_8%)] aria-expanded:bg-[color-mix(in_oklab,var(--card),var(--foreground)_4%)] aria-expanded:text-foreground dark:border-input',
+          'border-border bg-card shadow-control hover:bg-[color-mix(in_oklab,var(--card),var(--foreground)_3%)] hover:text-foreground active:bg-[color-mix(in_oklab,var(--card),var(--foreground)_6%)] aria-expanded:bg-[color-mix(in_oklab,var(--card),var(--foreground)_3%)] aria-expanded:text-foreground dark:border-input',
         secondary:
-          'bg-secondary text-secondary-foreground hover:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_5%)] active:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_9%)] aria-expanded:bg-secondary aria-expanded:text-secondary-foreground',
+          'bg-secondary text-secondary-foreground hover:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_5%)] active:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_8%)] aria-expanded:bg-secondary aria-expanded:text-secondary-foreground',
         ghost:
           'hover:bg-hover hover:text-foreground active:bg-pressed aria-expanded:bg-hover aria-expanded:text-foreground',
         destructive:
