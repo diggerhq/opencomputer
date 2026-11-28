@@ -3,8 +3,7 @@
 # container (compose.yaml, not this script) and the host agent with its
 # sessions in rootless Podman (this script). Carved from
 # computer/deploy/vm/provision.sh, the fleet's provisioner, without anything
-# that only the fleet needs: no cloud detection or metadata service, no data
-# disk discovery, no self-update timer, no Docker, no previews (cloudflared),
+# that only the fleet needs: no cloud detection, no data disk discovery, no self-update timer, no Docker, no previews (cloudflared),
 # no client relay, no operator CLIs (Claude Code, gh, codex, playwright).
 # The contract with the gateway container is selfhost/CONTRACT.md.
 #
@@ -28,7 +27,9 @@
 #     /opt/slack-presence/current pointing at it (containers mount /opt/slack-presence)
 #   - the session image, pulled by digest (or built here with --build-image)
 #   - systemd: slack-presence-host.service (EnvironmentFile=/etc/opencomputer/selfhost.env),
-#     oc-modelproxy (socket-activated), the metadata block, cgroup limits
+#     oc-modelproxy (socket-activated), the metadata block, cgroup limits;
+#     opencomputer-imds-deny.service denies the cloud metadata service to every
+#     user but root (DNS and NTP to it stay open), on every cloud
 #   - for the gateway's compose stack (selfhost/compose.yaml, not started here):
 #     podman-compose in /opt/podman-compose (Ubuntu's 1.0.6 ignores compose
 #     profiles) and user oc-gateway (home /var/lib/oc-gateway, rootless Podman,
@@ -341,7 +342,8 @@ Plan (nothing below has run):
      ($IMAGE_HOW), ABI $ABI: $( [[ $BUILD_IMAGE == 1 ]] && echo "podman build as $AGENT_USER, then warmed" || echo "pulled and warmed" )
   7. $SP_CURRENT -> $RELEASE; old releases and images pruned
   8. systemd: run dirs, /tmp ageing, user@$AGENT_UID drop-in, cgroup limits (limits.sh), oc-modelproxy (modelproxy.sh),
-     slack-presence-imds-block.service, $UNIT (EnvironmentFile=$SELFHOST_ENV)
+     slack-presence-imds-block.service, opencomputer-imds-deny.service (deny IMDS to non-root; ports 53, udp 123 open),
+     $UNIT (EnvironmentFile=$SELFHOST_ENV)
   9. user $HOST_USER, sudoers, SP_LAUNCH=podman (computer/deploy/vm/sp-host.sh new + apply)
      $GATEWAY_USER: lingering, podman-restart.service enabled (starts restart: always containers at boot)
      gateway image $GATEWAY_RUN ($GATEWAY_HOW)
@@ -679,9 +681,11 @@ EOF
     || die "oc-modelproxy did not install; no session can start without it"
   fill "$HERE/systemd/$UNIT" > "$SYSTEMD/$UNIT"
   fill "$HERE/systemd/slack-presence-imds-block.service" > "$SYSTEMD/slack-presence-imds-block.service"
+  install -m 0644 "$HERE/systemd/opencomputer-imds-deny.service" "$SYSTEMD/opencomputer-imds-deny.service"
   systemctl daemon-reload
-  systemctl enable -q slack-presence-imds-block.service
+  systemctl enable -q slack-presence-imds-block.service opencomputer-imds-deny.service
   systemctl restart slack-presence-imds-block.service
+  systemctl restart opencomputer-imds-deny.service || die "opencomputer-imds-deny.service failed: the metadata service would be open to every user"
   systemctl start "user@$AGENT_UID.service"
   as_agent systemctl --user daemon-reload || true
 }
@@ -799,7 +803,7 @@ uninstall() {
   [[ $DRY_RUN == 1 ]] && { say="echo would:"; echo "(dry run: nothing changes)"; }
   run() { $say "$*"; [[ $DRY_RUN == 1 ]] || "$@"; }
 
-  local units=("$UNIT" slack-presence-imds-block.service sp-host-imds-block.service
+  local units=("$UNIT" slack-presence-imds-block.service opencomputer-imds-deny.service sp-host-imds-block.service
                oc-modelproxy.service oc-modelproxy-api.socket oc-modelproxy-control.socket slack-presence-limits.service)
   local u
   for u in "${units[@]}"; do
@@ -823,7 +827,9 @@ uninstall() {
       done < <("$table" -S OUTPUT 2>/dev/null | grep -- "--uid-owner $uid " || true)
     done
   done
+  imds_deny_remove
   run rm -rf "$SYSTEMD/$UNIT" "$SYSTEMD/$UNIT.d" "$SYSTEMD/slack-presence-imds-block.service" \
+    "$SYSTEMD/opencomputer-imds-deny.service" \
     "$SYSTEMD/sp-host-imds-block.service" "$SYSTEMD"/oc-modelproxy.service "$SYSTEMD"/oc-modelproxy-api.socket \
     "$SYSTEMD"/oc-modelproxy-control.socket "$SYSTEMD/slack-presence-limits.service" \
     "$SYSTEMD/user@$AGENT_UID.service.d/10-slack-presence.conf" "$SYSTEMD/user-$AGENT_UID.slice.d/10-slack-presence.conf" \
@@ -851,6 +857,24 @@ uninstall() {
     echo "kept: users $AGENT_USER, $HOST_USER, modelproxy; $DATA (sessions, workspaces, images); $SELFHOST_ENV;"
     echo "      user $GATEWAY_USER with the compose stack, still running, and podman-compose. --purge removes them"
   fi
+}
+
+# opencomputer-imds-deny.service's rules: every jump from OUTPUT to OC-IMDS, then the chain.
+imds_deny_remove() {
+  local table addr
+  for table in iptables ip6tables; do
+    command -v "$table" >/dev/null || continue
+    "$table" -S OC-IMDS >/dev/null 2>&1 || continue
+    for addr in 169.254.169.254 fd00:ec2::254 fd20:ce::254; do
+      case $table:$addr in iptables:*:*|ip6tables:*.*) continue ;; esac
+      while "$table" -C OUTPUT -d "$addr" -j OC-IMDS 2>/dev/null; do
+        run "$table" -D OUTPUT -d "$addr" -j OC-IMDS || break
+        [[ $DRY_RUN == 0 ]] || break
+      done
+    done
+    run "$table" -F OC-IMDS
+    run "$table" -X OC-IMDS || warn "$table: chain OC-IMDS is still referenced; remove it by hand"
+  done
 }
 
 # --purge: the compose stack's user, with the stack's containers and volumes

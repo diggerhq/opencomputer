@@ -97,11 +97,13 @@ aws ec2 run-instances --region "$AWS_REGION" \
   --block-device-mappings \
     'DeviceName=/dev/sda1,Ebs={VolumeSize=64,VolumeType=gp3}' \
     'DeviceName=/dev/sdf,Ebs={VolumeSize=128,VolumeType=gp3,DeleteOnTermination=false}' \
-  --metadata-options HttpTokens=required \
+  --metadata-options HttpTokens=required,HttpPutResponseHopLimit=1 \
   --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=computer},{Key=organization,Value=$ORG_ID}]" \
   --user-data file://computer-user-data.sh \
   --query 'Instances[0].InstanceId' --output text
 ```
+
+`HttpPutResponseHopLimit=1` keeps the metadata service's token, and so the instance's credentials, from anything that reaches it through a routed hop, such as a bridged container. Rootless Podman's pasta opens its connections from the host, so the hop limit does not cover the sessions: the host's firewall rule does. A [single-VM](/self-hosting/single-vm) install denies the metadata service to every user but root (`opencomputer-imds-deny`).
 
 The first boot installs the toolchains, formats the blank volume, mounts it at `/data` and starts the host. It takes about five minutes. The boot script formats a volume only when it is blank.
 

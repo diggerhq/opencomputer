@@ -38,6 +38,7 @@ The installer sets up the following:
 - the `oc-gateway` user (home `/var/lib/oc-gateway`, lingering enabled), which runs the gateway
 - the gateway's files in `/var/lib/oc-gateway/selfhost`, copied from your checkout and owned by `oc-gateway`
 - the gateway image, pulled from `ghcr.io/diggerhq/computer-gateway` and pinned in `compose.yaml` to the build of your checkout's gateway source (`:src-<hash>`, from `selfhost/gateway/source-tag.sh`)
+- `opencomputer-imds-deny`, which denies the cloud instance metadata service (169.254.169.254, and `fd00:ec2::254` and `fd20:ce::254` over IPv6) to every user but root, on any cloud. DNS (port 53) and NTP (UDP 123) to that address stay open, because Google Cloud serves both there. A non-root program of your own that reads the metadata service stops working; run it as root. `sudo selfhost/check-imds.sh` checks the rule.
 
 CI publishes the gateway image only after a change to the gateway's source reaches `main`. If your checkout's image isn't published, for example on a branch with its own gateway changes, the installer stops and says so. Add `--build-gateway` to build it on the VM instead, which takes 20 to 30 minutes.
 
