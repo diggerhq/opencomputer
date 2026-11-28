@@ -23,6 +23,11 @@ describe('boot.env', () => {
     expect(text).not.toContain('PATH=');
   });
 
+  it('SP_OFFLOAD_SOCKET comes last, only when the host serves one (work 136)', () => {
+    expect(bootEnv({ root: '/r', spec, vars: {} })).not.toContain('SP_OFFLOAD_SOCKET');
+    expect(bootEnv({ root: '/r', spec, vars: {}, offloadSocket: '/run/x/tokens/a.offload.sock' }).trim().split('\n').at(-1)).toBe("SP_OFFLOAD_SOCKET='/run/x/tokens/a.offload.sock'");
+  });
+
   it('never writes a host-only name, whatever the host has', () => {
     const all = Object.fromEntries(RUNNER_ENV.map((k) => [k, `/host/${k}`]));
     const names = bootEnv({ root: '/r', spec, vars: all }).trimEnd().split('\n').map((l) => l.slice(0, l.indexOf('=')));

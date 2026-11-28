@@ -78,7 +78,8 @@ export interface SandboxHostDeps {
   tm: Telemetry;
   /** Both are asked for at a start, not here: the host builds what answers them after this. */
   mint(spec: SessionSpec, runnerId: string, run: RunRoot): Promise<RunnerApi | undefined>;
-  serveTokens(run: RunRoot, id: string, session: () => string | undefined): { close(): void };
+  /** `tokens.serveRunner`, with the runner's offload socket when the host serves one (main.ts; `offload`: its path). */
+  serveTokens(run: RunRoot, id: string, session: () => string | undefined): { close(): void; offload?: string };
   /** `tokens.serveHelper`. */
   serveHelper(socket: string, allowed: () => string[]): net.Server;
   /** True while the runner with this id is connected. */
@@ -106,7 +107,7 @@ export function sandboxHost(d: SandboxHostDeps) {
   const locks = threadLocks();
   const ports = previewPorts(path.join(d.data, 'state', 'previews.json'));
   const as = asRunner(user.sudo);
-  // A container's token socket asks for its record's thread; one with no record (a spare) is refused.
+  // A container's token (and offload) socket asks for its record's thread; one with no record (a spare) is refused.
   const serveTokens: SandboxHostDeps['serveTokens'] = (run, id, session) => d.serveTokens(run, id, () => {
     const key = session() || records.get(id)?.key;
     if (!key) throw new Error('this runner serves no thread'); // a spare: nothing to ask a token for

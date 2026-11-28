@@ -67,7 +67,7 @@ export interface SweepDeps {
   /** The host's SP_DATA, for its use in percent. */
   dataDir: string;
   /** `tokens.serveRunner`. */
-  serveTokens(run: RunRoot, id: string, session: () => string | undefined): { close(): void };
+  serveTokens(run: RunRoot, id: string, session: () => string | undefined): { close(): void; offload?: string };
   /** The checked dial of a runner's socket (runner-sockets.ts `dialSocket`); undefined when nothing answers. */
   dial(socket: string): Promise<net.Socket | undefined>;
   /** Take a runner found running on as its record's (start-runner.ts `adopt`, verified); rejects when it is not, having told it to go. */

@@ -521,6 +521,7 @@ environment, which any session can change.
 | `SP_IMAGE` / `SP_IMAGE_ABI` | unset | the session image of this release and the integer in `deploy/image/ABI` (work 103). The image is `ghcr.io/diggerhq/computer-session@sha256:<digest>`, the line in the release's `deploy/image.pin`: the release pipeline writes it with `deploy/image-pin.sh`, which names only the image main's CI built from the release's `deploy/image`. A release without the file is refused, except on a test computer provisioned with `SP_IMAGE_BRANCH=1`, which runs `:branch-<git tree of deploy/image>`, the tag CI pushes for a branch. Never set by hand: `deploy/vm/provision.sh` writes both to the release's `.sp-version.env`, which the host unit loads, and pulls and warms the image before it switches to the release (`deploy/vm/sandbox.sh`). A host with `SP_LAUNCH=podman` refuses to start without both |
 | `SP_LAUNCH` | `systemd` on a hosted computer, `detached` elsewhere; `podman` on a new hosted computer (`deploy/vm/sp-host.sh new` writes its marker, `/etc/slack-presence/sp-launch`; one without a marker stays `systemd` until `sp-host.sh launch podman` drains it) | how a runner is started (`host/launch.ts`): `systemd` (a user unit of the runner user), `detached` (a child process, on a laptop), or `podman` (work 103: each session in its own container `sp-runner-<id>` of `SP_IMAGE`, started by `podman start --attach` in a unit of the runner user; `host/sandbox/`). `podman` needs `SP_RUNNER_USER`, `SP_IMAGE` and `SP_IMAGE_ABI`, and a computer prepared by `deploy/vm/sandbox.sh`; a session's workspace, the person's clones and the thread's own worktree registries are mounted into it by `bin/sandbox-mount.py`, and its worktrees are added inside it by `bin/ws-add.sh`; clones, fetches and the question which build directories git ignores run in helper containers, so the host runs no git on what a session wrote. A session's previews go through a socket of its runner (`SP_PREVIEW_SOCKET`), and its terminal and `/files` run inside its container, or for `/files` of a stopped session in a helper container. A restarted host takes its containers back (`host/sandbox/sweep.ts`): a running container with a record is redialed and adopted with its thread, one that does not answer in time is stopped and resumes on the next message, a stopped one resumes on the next message, and spares, which have no thread, are stopped and removed |
 | `SP_PREVIEW_SOCKET` | unset | set by the host for a runner in a container only (`host/sandbox/podman-args.ts`, work 103): the socket in the session's run directory (`runners/<id>.preview.sock`) where the runner pipes the host's preview proxy to the ports this session previewed (`runner/preview-socket.ts`). Without it nothing listens and the proxy dials `127.0.0.1` |
+| `SP_OFFLOAD_CONTROL` | unset (no offload) | the build offload service's control socket (`/run/opencomputer-offload/control.sock`, work 136); with `SP_LAUNCH=podman`, while the service says ready, each runner gets its own offload socket (`<SP_RUN>/tokens/<id>.offload.sock`, `host/offload-relay.ts`) and `SP_OFFLOAD_SOCKET` in its boot.env, for `bin/oc-offload` |
 
 **Telemetry** (work 054; runners always hand telemetry to their host, which sends it only if `SP_TELEMETRY_URL` is set)
 
@@ -530,6 +531,20 @@ environment, which any session can change.
 | `SP_TELEMETRY_CREDENTIAL` | unset (spool, don't send) | this host's signed collector credential; a newer one from the gateway's `welcome` is kept in `<SP_DATA>/state/telemetry/credential` and wins |
 | `SP_REGION` | `unknown` | region stamped on every record (e.g. `westus2`); passed to runners |
 | `SP_SUBSTRATE` | unset | where runners run (`vm`, `oc-sandbox`); a telemetry dimension, passed to runners |
+
+**Build offload** (work 136; `src/offload/main.ts`, run by `opencomputer-offload.service` as `oc-offload` on a self-hosted AWS box; read from `/etc/opencomputer/selfhost.env`, and only when `/etc/opencomputer/offload.enabled` exists)
+
+| Variable | Default | |
+|---|---|---|
+| `SP_OFFLOAD_BACKEND` (alias `SP_OFFLOAD`) | unset (off) | `aws-microvm` is the only value; anything else is off, with a warning |
+| `SP_OFFLOAD_REGION` | the instance's region | where MicroVMs run and the bucket is |
+| `SP_OFFLOAD_BUCKET` | unset (off) | S3 bucket for sources, artifacts and logs (`runs/<instance>/<job>/`, which the stack's policy allows and its lifecycle rule expires) |
+| `SP_OFFLOAD_IMAGE_S` / `SP_OFFLOAD_IMAGE_M` | unset (that size is refused; both unset: off) | the builder image's ARN for `--size s` / `m`, as `selfhost/aws/build-offload-image.sh` prints it (a bare name is rejected by the API) |
+| `SP_OFFLOAD_IMAGE_VERSION` | the image's latest | |
+| `SP_OFFLOAD_MAX_CONCURRENT` | `2` | MicroVMs at once; up to twice as many jobs (at least 4) wait, more are refused |
+| `SP_OFFLOAD_MAX_MINUTES` | `60` (at most `480`) | a job's longest run; the MicroVM's maximum duration is this plus 2 minutes |
+| `SP_OFFLOAD_SOURCE_MAX_MB` / `SP_OFFLOAD_ARTIFACT_MAX_MB` | `2048` / `2048` | upload and download caps |
+| `SP_OFFLOAD_CONTROL` | `/run/opencomputer-offload/control.sock` | the control socket (0660, group `sp-host`, or `SP_OFFLOAD_GROUP`) |
 
 **Wire relay** (work 084; `dist/wire.js`, `src/wire/main.ts`, run by `slack-presence-wire.service` as `sp-wire`; see [`deploy/vm/RUNBOOK.md`](deploy/vm/RUNBOOK.md))
 
