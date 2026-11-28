@@ -101,7 +101,8 @@ describe('in-app Black Friday prompts', () => {
   it('shows the banner and the welcome popup to a trial org', async () => {
     await render()
     expect(text()).toContain('Pro $10/mo, Max $100/mo, double the minutes')
-    expect(text()).toContain('37 of 50 twelve-month spots left')
+    expect(text()).toContain('12-month price lock for the first 50 workspaces')
+    expect(text()).not.toContain('spots left')
     expect(text()).toContain('Half price, double the minutes')
     const claim = [...document.querySelectorAll('a')].find(
       (a) => a.textContent === 'Claim the deal',

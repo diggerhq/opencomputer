@@ -65,16 +65,15 @@ export function promoMonths(promo: Pick<BillingPromo, 'earlyLeft'>): 3 | 12 {
   return promo.earlyLeft > 0 ? 12 : 3
 }
 
-// "Locked for 12 months for the first 50 workspaces. 37 spots left." /
-// "The 50 twelve-month spots are taken. Claim now to lock it in for 3 months."
+// The price lock, never how many early spots are left.
+// "The first 50 workspaces keep it for 12 months, later ones for 3." /
+// "Claim now to lock it in for 3 months."
 export function promoTermText(
   promo: Pick<BillingPromo, 'earlyCap' | 'earlyLeft'>,
 ): string {
-  if (promo.earlyLeft > 0) {
-    const spots = `${promo.earlyLeft} ${promo.earlyLeft === 1 ? 'spot' : 'spots'} left`
-    return `Locked for 12 months for the first ${promo.earlyCap} workspaces. ${spots}.`
-  }
-  return `The ${promo.earlyCap} twelve-month spots are taken. Claim now to lock it in for 3 months.`
+  return promo.earlyLeft > 0
+    ? `The first ${promo.earlyCap} workspaces keep it for 12 months, later ones for 3.`
+    : 'Claim now to lock it in for 3 months.'
 }
 
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -136,13 +135,13 @@ export function promoOfferText(promo: Pick<BillingPromo, 'plans'>): string {
   return `Pro $${promo.plans.pro.price}/mo, Max $${promo.plans.max.price}/mo, double the minutes`
 }
 
-// "37 of 50 twelve-month spots left" / "Locked in for 3 months"
-export function promoSpotsText(
+// "12-month price lock for the first 50 workspaces" / "3-month price lock"
+export function promoLockText(
   promo: Pick<BillingPromo, 'earlyCap' | 'earlyLeft'>,
 ): string {
   return promo.earlyLeft > 0
-    ? `${promo.earlyLeft} of ${promo.earlyCap} twelve-month spots left`
-    : 'Locked in for 3 months'
+    ? `12-month price lock for the first ${promo.earlyCap} workspaces`
+    : '3-month price lock'
 }
 
 // Where the in-app deal prompts send people: that plan's checkout on Billing

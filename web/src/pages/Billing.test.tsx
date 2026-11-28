@@ -117,13 +117,14 @@ const button = (text: string) =>
 const plans = () => container.querySelector('#plans')!.textContent
 
 describe('billing page Black Friday deal', () => {
-  it('shows deal prices struck through against normal, with spots and a countdown', async () => {
+  it('shows deal prices struck through against normal, with the price lock and a countdown', async () => {
     client.getBillingPromo.mockResolvedValue(promo)
     await render()
     expect(container.textContent).toContain(
       'Pro and Max at half price with double the minutes.',
     )
-    expect(container.textContent).toContain('37 of 50 12-month spots left')
+    expect(container.textContent).toContain('12-month price lock')
+    expect(container.textContent).not.toContain('spots left')
     expect(container.textContent).toContain('Ends in')
     const struck = [...container.querySelectorAll('#plans s')].map(
       (s) => s.textContent,

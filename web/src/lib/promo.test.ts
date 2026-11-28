@@ -9,7 +9,7 @@ import {
   promoHref,
   promoIntentPath,
   promoOfferText,
-  promoSpotsText,
+  promoLockText,
   promoWelcomeKey,
   promoMonths,
   promoTermText,
@@ -86,15 +86,14 @@ describe('bfcm promo', () => {
     ).toBeNull()
   })
 
-  it('says 12 months while early spots remain, 3 after', () => {
+  it('says 12 months while early spots remain, 3 after, never how many', () => {
     expect(promoMonths(promo())).toBe(12)
     expect(promoMonths(promo({ earlyLeft: 0 }))).toBe(3)
     expect(promoTermText(promo())).toBe(
-      'Locked for 12 months for the first 50 workspaces. 37 spots left.',
+      'The first 50 workspaces keep it for 12 months, later ones for 3.',
     )
-    expect(promoTermText(promo({ earlyLeft: 1 }))).toContain('1 spot left')
     expect(promoTermText(promo({ earlyLeft: 0 }))).toBe(
-      'The 50 twelve-month spots are taken. Claim now to lock it in for 3 months.',
+      'Claim now to lock it in for 3 months.',
     )
   })
 
@@ -141,10 +140,10 @@ describe('bfcm promo', () => {
     expect(promoOfferText(promo())).toBe(
       'Pro $10/mo, Max $100/mo, double the minutes',
     )
-    expect(promoSpotsText(promo())).toBe('37 of 50 twelve-month spots left')
-    expect(promoSpotsText(promo({ earlyLeft: 0 }))).toBe(
-      'Locked in for 3 months',
+    expect(promoLockText(promo())).toBe(
+      '12-month price lock for the first 50 workspaces',
     )
+    expect(promoLockText(promo({ earlyLeft: 0 }))).toBe('3-month price lock')
   })
 
   it('links the prompts to Billing with the deal', () => {
