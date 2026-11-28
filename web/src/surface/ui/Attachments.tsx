@@ -138,7 +138,7 @@ function MessageImage({ a, sending }: { a: ItemAttachment; sending: boolean }) {
     <>
       <button
         type="button"
-        className={cn(IMAGE_BOX, 'focus-visible:ring-ring/50 outline-none focus-visible:ring-3')}
+        className={cn(IMAGE_BOX, 'outline-none focus-visible:focus-ring')}
         title={a.name}
         aria-label={`Open ${a.name}`}
         onClick={() => setOpen(true)}
@@ -200,7 +200,7 @@ function MessageFile({ a, sending }: { a: ItemAttachment; sending: boolean }) {
   return (
     <button
       type="button"
-      className={cn(CHIP, 'focus-visible:ring-ring/50 hover:bg-background relative overflow-hidden outline-none focus-visible:ring-3', failed && 'border-destructive/50 text-destructive')}
+      className={cn(CHIP, 'hover:bg-background relative overflow-hidden outline-none focus-visible:focus-ring', failed && 'border-destructive/50 text-destructive')}
       title={failed ? `${a.name}: ${a.error ?? 'the upload failed'}` : sending ? a.name : `Download ${a.name}`}
       disabled={busy || sending}
       onClick={() => void download()}

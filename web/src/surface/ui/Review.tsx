@@ -348,7 +348,7 @@ function FileSnip({
   const more = head ? file.meta.unifiedLineCount - head.unifiedLineCount : 0
   return (
     <div
-      className="bg-card ring-border mb-3 overflow-clip rounded-[10px] ring-1"
+      className="bg-card ring-border mb-3 overflow-clip rounded-xl ring-1"
       data-path={file.path}
     >
       <button
@@ -455,7 +455,7 @@ function ExcerptCard({
       : `line ${nf(x.start)}`
   return (
     <div
-      className="bg-card ring-border mb-3 overflow-clip rounded-[10px] ring-1"
+      className="bg-card ring-border mb-3 overflow-clip rounded-xl ring-1"
       data-excerpt={x.path}
     >
       <button
@@ -500,7 +500,7 @@ function FileList({
   const [all, setAll] = useState(false)
   const shown = all ? part.files : part.files.slice(0, FEW * 2)
   return (
-    <div className="ring-border mb-3 overflow-clip rounded-[10px] ring-1">
+    <div className="ring-border mb-3 overflow-clip rounded-xl ring-1">
       {shown.map((f) => {
         const note = part.notes.get(f.path)
         return (
@@ -656,7 +656,7 @@ function Summary({
             </p>
           )}
           {eyes.length > 0 && (
-            <div className="bg-status-pending-bg ring-status-pending/25 mb-2 rounded-[10px] px-4 py-3 ring-1 ring-inset">
+            <div className="bg-status-pending-bg ring-status-pending/25 mb-2 rounded-xl px-4 py-3 ring-1 ring-inset">
               <b className="font-semibold">
                 {eyes.length === 1 ? 'One thing' : `${eyes.length} things`}{' '}
                 worth your eye
@@ -905,7 +905,7 @@ function Full({ parts, resultId }: { parts: Part[]; resultId: string }) {
             ),
             p.files.map((f) => (
               <div
-                className="ring-border mb-4 overflow-clip rounded-[10px] ring-1"
+                className="ring-border mb-4 overflow-clip rounded-xl ring-1"
                 data-path={f.path}
                 key={f.path}
               >
