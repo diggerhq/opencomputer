@@ -11,12 +11,14 @@ Description: >-
 # VERIFY markers are facts the SDK types could not confirm; each needs one
 # check in a real account (work/136 section 17):
 #   V1  the lambda: action prefix and the MicroVM action names
-#   V1b the microvm-image / microvm ARN shapes (RunMicrovm's resources: verified)
 #   V1c aws:RequestTag support on CreateMicrovmImage
 #   V1d whether CreateMicrovmImage also authorizes the managed base image ARN
-#   V3  whether MicroVMs are taggable (TagResource on microvm:*)
 #   V4  the service principal of build and execution roles, and iam:PassedToService
 #   V7  the Cost Explorer service name MicroVM charges appear under
+#
+# Verified on AWS: the microvm-image and microvm ARN shapes (was V1b), and
+# MicroVMs are not taggable (was V3): TagResource on a microvm ARN fails
+# ValidationException, so MicroVMs are owned by image ARN, not by tag.
 #
 # A change to the instance policy (update-stack) takes 3-4 minutes to reach the
 # MicroVM service: retries within about 2 minutes still failed (seen on AWS).
@@ -272,7 +274,7 @@ Resources:
               - lambda:TagResource
               - lambda:UntagResource
               - lambda:ListTags
-            Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm-image:oc-offload-*'   # VERIFY V1b
+            Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm-image:oc-offload-*'
             Condition:
               StringEquals:
                 aws:RequestedRegion: !Ref AWS::Region
@@ -280,7 +282,6 @@ Resources:
             Effect: Allow
             Action:
               - lambda:RunMicrovm
-              - lambda:GetMicrovm                       # RunMicrovm also authorizes lambda:GetMicrovm on the image ARN (verified on AWS)
             Resource:
               - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm-image:oc-offload-*'
               - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm:*'
@@ -295,9 +296,9 @@ Resources:
               - lambda:SuspendMicrovm
               - lambda:ResumeMicrovm
               - lambda:CreateMicrovmAuthToken
-              - lambda:TagResource                      # VERIFY V3
-              - lambda:ListTags
-            Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm:*'   # VERIFY V1b
+            Resource:                                   # MicroVM actions are authorized against the image ARN as well (verified on AWS)
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm:*'
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm-image:oc-offload-*'
             Condition:
               StringEquals:
                 aws:RequestedRegion: !Ref AWS::Region
