@@ -296,6 +296,10 @@ Resources:
             Condition:
               StringEquals:
                 aws:RequestedRegion: !Ref AWS::Region
+          - Sid: PassInternetEgressConnector        # RunMicrovm needs it for the default INTERNET_EGRESS connector (verified on AWS)
+            Effect: Allow
+            Action: lambda:PassNetworkConnector
+            Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS'
           - Sid: PassOnlyOurServiceRoles
             Effect: Allow
             Action: iam:PassRole
