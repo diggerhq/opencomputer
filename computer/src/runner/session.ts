@@ -25,14 +25,10 @@ import { safeKey } from '../workspaces/index.js';
 import type { Attachment } from './attachments.js';
 import { labelled, type Mentioned } from './names.js';
 import { log } from '../log.js';
-import type { PromptGuard } from './prompt-guard.js';
-import type { CheckoutResult, EffortLevel, PermissionMode, SecretRequest, Speed } from '../protocol.js';
-import type { Work } from './work.js';
+import type { PermissionMode } from '../protocol.js';
 import { prefaced } from './role-notes.js';
-import type { PreviewHooks } from './preview.js';
 import { fileSender, type FileSender } from './send-file.js';
 import { cardSender } from './post-card.js';
-import type { SessionSecrets } from './session-secrets.js';
 import { TIERS, takeTier } from '../tiers.js';
 import { FIRST_THINKING_CARD_MS, OPENING_THINKING_CARD_MS, THINKING_CARD_MS, ThinkingCards } from './thinking.js';
 import { ReminderFilter } from './stream.js';
@@ -41,63 +37,22 @@ import { close, type Compactor, type Gate, type Harness, type HarnessEvent, type
 import { claude } from './harness/claude/harness.js';
 import type { SessionStatus, ThreadInfo } from './thread.js';
 import { isSurface, SlackSurface, type Surface } from './api/surface.js';
-import type { SentFrom, SessionTap } from './api/tap.js';
+import type { SentFrom } from './api/tap.js';
 import { FOLD_AT, Timeline, tail } from './timeline.js';
 import { replyToPrompts } from './prompt-replies.js';
 import { permissionPrompt, prompts, questionPrompt } from './prompts.js';
 import { runCommand } from './commands.js';
-import type { TurnEvents } from './turn-events.js';
 import { Compaction } from './compaction.js';
 import { effortOf, speedOf, switchModel } from './model-switch.js';
 import { TurnCloser } from './turn-close.js';
 import { HeldSteer } from './held-steer.js';
 import { LateNotes } from './late-notes.js';
+import type { SessionHooks, SessionInfo } from './session-types.js';
 
 export { SILENT, prompts };
-
-export interface SessionInfo {
-  key: string;
-  kind: 'thread' | 'channel'; // a session created over the API (work 084) is a 'thread' with no channel
-  channel?: string;
-  threadTs?: string;
-  userId?: string;
-  teamId?: string;
-  cwd: string;
-  title: string;
-  /** A person set the title (the API's sessions.update): the computer's naming (work 093) leaves it alone. */
-  renamed?: boolean;
-  mode: PermissionMode;
-  model?: string;
-  effort?: EffortLevel; // `!effort` (model-switch.ts); DEFAULT_EFFORT without
-  speed?: Speed; // `!speed` (model-switch.ts); fast without
-  sdkSessionId?: string;
-}
+export type { SessionHooks, SessionInfo };
 
 const FILE_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'Bash']);
-
-/** Observers for a process that hosts the session (the runner reports these to its host). */
-export interface SessionHooks {
-  /** The turn started (true) or finished rendering (false). */
-  busy?(busy: boolean): void;
-  /** Model output for the current turn arrived (first stream event or assistant message). */
-  output?(): void;
-  /** The public API as this session's agent (work 118, section 41); offers the tools that reach the cloud when set. */
-  work?: Work;
-  previews?: PreviewHooks; // public URLs for the session's servers (work 074); offers preview and unpreview
-  /** The session's secrets (work 046): usable by commands, redacted from everything posted. */
-  secrets?: SessionSecrets;
-  /** Withholds copies of Calvin's own prompt from streamed text (Slack calls are guarded at the client). */
-  guard?: PromptGuard;
-  /** Ask the person for a secret through the gateway; offers the request_secret tool when set. */
-  requestSecret?(req: SecretRequest): Promise<void>;
-  /** Check out workspace repositories through the host (work 056); offers the checkout_repo tool when set. */
-  checkout?(repos: string[]): Promise<CheckoutResult[]>;
-  /** `!restart`: exit once the turn is over, so the next message starts on the deployed code and resumes. */
-  restart?(): void;
-  event?(e: HarnessEvent): void; // every harness record, as the runner watches for refusals (out of credits, a denied model)
-  turns?: TurnEvents; // telemetry (work 054): reports turns as facts, never steers them
-  api?: SessionTap; // the session's API journal (work 084, api/tap.ts): hears turns, never steers them
-}
 
 /** Where a harness compacts only inside a turn: nothing to do between them. */
 const NO_COMPACTOR: Compactor = { running: false, cancel() {}, turnEnded() {} };
