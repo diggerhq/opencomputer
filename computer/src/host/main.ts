@@ -78,6 +78,7 @@ import { checkedDial } from './remote-port.js';
 import { type Runner, runnerStarts } from './start-runner.js';
 import { Pool } from './pool.js';
 import { freshTokenDir, tokenRelay } from './tokens.js';
+import { offloadRelay } from './offload-relay.js';
 import { hostPreviews } from './previews.js';
 import { startHostTelemetry, workspaceTelemetry } from './telemetry.js';
 import { diskReport, hostSampler } from './sample.js';
@@ -169,11 +170,21 @@ const starting = new Map<string, Promise<Runner>>();
 /** Set on SIGTERM: runner sockets closing then are the host leaving, not the runners. */
 let stopping = false;
 
+/** Build offload (work 136, offload-relay.ts): a `podman` host with SP_OFFLOAD_CONTROL serves each runner an offload socket while the service is ready. */
+const offload = LAUNCH === 'podman' && config.offloadSocket ? offloadRelay({ control: config.offloadSocket, org: () => identity.hostId }) : undefined;
+if (offload) void offload.refresh(), setInterval(() => void offload.refresh(), 30_000).unref();
+/** A runner's token socket, and its offload socket when served; one handle closes both (the runner gone, retired, its sandbox removed: cancelFence). */
+function runnerSockets(run: string, id: string, session: () => string | undefined): { close(): void; offload?: string } {
+  const t = tokens.serveRunner(run, id, session);
+  const o = offload?.serveRunner(run, id, session);
+  return o ? { offload: o.socket, close: () => (t.close(), o.close()) } : t;
+}
+
 /** Work 103: on a `podman` host every thread runs in its own container (sandbox/host.ts); `api` and `tokens` below are there by a start. */
 const sandbox = LAUNCH === 'podman'
   ? sandboxHost({ env, image: config.image, abi: config.imageAbi, systemdRun: config.systemdRun, run: HOST_RUN, data: HOST_DATA, root: ROOT, version: VERSION, tm,
       modelSocket: config.modelSocket ?? MODEL_SOCKET, models: subs,
-      mint: (spec, id, run) => api.mint(spec, id, run), serveTokens: (run, id, session) => tokens.serveRunner(run, id, session),
+      mint: (spec, id, run) => api.mint(spec, id, run), serveTokens: runnerSockets,
       serveHelper: (socket, allowed) => tokens.serveHelper(socket, allowed), running: (id) => allRunners().some((r) => r.id === id),
       adopt: (record, run, sock) => starts.adopt(record.id, sock, { verify: true, sandbox: { record, run } }),
       unpreview: (name, from) => previews.forget(name, from), sweepAgeMs: config.sweepAgeMs })
@@ -183,7 +194,7 @@ const sandbox = LAUNCH === 'podman'
 const starts = runnerStarts({
   tm, launch: { tm, mode: LAUNCH, env, root: ROOT, systemdRun: config.systemdRun }, run: HOST_RUN, version: VERSION, pool,
   creds: () => org.creds, models: subs,
-  mint: (spec, id) => api.mint(spec, id), serveTokens: (run, id, session) => tokens.serveRunner(run, id, session),
+  mint: (spec, id) => api.mint(spec, id), serveTokens: runnerSockets,
   sandbox: sandbox?.starts, spares: sandbox?.spares, image: config.image, stopSandbox: (id) => sandbox!.stop(id, 0),
   fillPool: () => fillPool(), inFork: (f, fn) => forkContext.run(f, fn),
   register, closed: runnerClosed, message: onRunner, exit: exitRunner, toGateway,

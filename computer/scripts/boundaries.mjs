@@ -28,7 +28,7 @@ import path from 'node:path';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const SRC = path.join(ROOT, 'src');
-const PROCESSES = ['host', 'runner', 'wire'];
+const PROCESSES = ['host', 'runner', 'wire', 'offload'];
 const WIRE_MAY = new Set(['protocol.ts', 'protocol-api.ts', 'signed-header.ts', 'session-ids.ts', 'ipc.ts', 'log.ts']);
 /** Whether src/wire may import `target` (a path under src/, extension as written: .js). */
 const wireMay = (target) => {
