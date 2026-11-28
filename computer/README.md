@@ -539,7 +539,7 @@ environment, which any session can change.
 | `SP_OFFLOAD_BACKEND` (alias `SP_OFFLOAD`) | unset (off) | `aws-microvm` is the only value; anything else is off, with a warning |
 | `SP_OFFLOAD_REGION` | the instance's region | where MicroVMs run and the bucket is |
 | `SP_OFFLOAD_BUCKET` | unset (off) | S3 bucket for sources, artifacts and logs (`offload/<instance>/<job>/`) |
-| `SP_OFFLOAD_IMAGE_S` / `SP_OFFLOAD_IMAGE_M` | unset (that size is refused; both unset: off) | the builder image for `--size s` / `m` |
+| `SP_OFFLOAD_IMAGE_S` / `SP_OFFLOAD_IMAGE_M` | unset (that size is refused; both unset: off) | the builder image's ARN for `--size s` / `m`, as `selfhost/aws/build-offload-image.sh` prints it (a bare name is rejected by the API) |
 | `SP_OFFLOAD_IMAGE_VERSION` | the image's latest | |
 | `SP_OFFLOAD_MAX_CONCURRENT` | `2` | MicroVMs at once; up to twice as many jobs (at least 4) wait, more are refused |
 | `SP_OFFLOAD_MAX_MINUTES` | `60` (at most `480`) | a job's longest run; the MicroVM's maximum duration is this plus 2 minutes |

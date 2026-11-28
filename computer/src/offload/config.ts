@@ -19,7 +19,7 @@ export interface OffloadConfig {
   /** Undefined: the identity document's region. */
   region?: string;
   bucket: string;
-  /** Image ARN or name per size; a size without one is refused. */
+  /** Image ARN per size (the MicroVM API rejects a bare name); a size without one is refused. */
   images: Partial<Record<OffloadSize, string>>;
   imageVersion?: string;
   maxConcurrent: number;
@@ -72,6 +72,9 @@ export function loadOffloadConfig(env: NodeJS.ProcessEnv, marker: boolean): Load
   if (env.SP_OFFLOAD_IMAGE_S?.trim()) images.s = env.SP_OFFLOAD_IMAGE_S.trim();
   if (env.SP_OFFLOAD_IMAGE_M?.trim()) images.m = env.SP_OFFLOAD_IMAGE_M.trim();
   if (!images.s && !images.m) return { off: 'neither SP_OFFLOAD_IMAGE_S nor SP_OFFLOAD_IMAGE_M is set; offload is off', warnings };
+  for (const [size, image] of Object.entries(images)) {
+    if (!image.startsWith('arn:')) warnings.push(`SP_OFFLOAD_IMAGE_${size.toUpperCase()}=${image} is not an ARN; the MicroVM API rejects a bare name (use the line build-offload-image.sh printed)`);
+  }
   if (!images.s) warnings.push('SP_OFFLOAD_IMAGE_S is not set: size s is refused');
   if (!images.m) warnings.push('SP_OFFLOAD_IMAGE_M is not set: size m is refused');
   const maxConcurrent = int(env, 'SP_OFFLOAD_MAX_CONCURRENT', 2, 1, 32, warnings);
