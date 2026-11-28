@@ -54,8 +54,8 @@ describe('aws', () => {
     expect((await a.list('img')).map((i) => i.microvmId)).toEqual(['a', 'b']);
   });
   it('presigns PUT and GET for 15 minutes', async () => {
-    const put = new URL(await a.presignPut('offload/h/j1/src.tgz'));
-    expect(put.pathname).toContain('offload/h/j1/src.tgz');
+    const put = new URL(await a.presignPut('runs/h/j1/src.tgz'));
+    expect(put.pathname).toContain('runs/h/j1/src.tgz');
     expect(put.searchParams.get('X-Amz-Expires')).toBe('900');
     expect(put.searchParams.get('x-id')).toBe('PutObject');
     expect(new URL(await a.presignGet('k')).searchParams.get('x-id')).toBe('GetObject');

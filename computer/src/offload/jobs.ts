@@ -60,7 +60,7 @@ const TOKEN_RENEW = 50 * 60_000;
 const URL_RESIGN = 10 * 60_000;
 const ID = /^j[0-9a-f]{16}$/;
 
-const objectKey = (hostTag: string, id: string, name: 'src.tgz' | 'out.tgz' | 'build.log') => `offload/${hostTag}/${id}/${name}`;
+const objectKey = (hostTag: string, id: string, name: 'src.tgz' | 'out.tgz' | 'build.log') => `runs/${hostTag}/${id}/${name}`;
 const safeArtifact = (a: unknown) => typeof a === 'string' && a.length > 0 && a.length < 1024 && !a.startsWith('/') && !a.split('/').includes('..');
 
 export function view(r: JobRow, queuePosition?: number): JobView {
