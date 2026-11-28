@@ -148,7 +148,16 @@ image_input() {
   printf '"baseImageArn":"%s","baseImageVersion":"%s","buildRoleArn":"%s","description":"OpenComputer build offload, tier %s (%s MiB), builder %s",' \
     "$BASE_ARN" "$BASE_VERSION" "$BUILD_ROLE_ARN" "$1" "$2" "$HASH"
   printf '"codeArtifact":{"uri":"%s"},"cpuConfigurations":[{"architecture":"X86_64"}],"resources":[{"minimumMemoryInMiB":%s}],"clientToken":"%s"' \
-    "$URI" "$2" "oc-offload-$1-$ABI-$HASH"
+    "$URI" "$2" "$(client_token "$1")"
+}
+
+# client_token TIER: Lambda remembers a clientToken after the image is deleted,
+# so a token reused with other parameters (a re-created stack's build role, a
+# newer base image) is refused. The hash of those makes it theirs; at most 64
+# characters.
+client_token() {
+  printf 'oc-offload-%s-%s-%s-%s' "$1" "$ABI" "$HASH" \
+    "$(printf '%s|%s|%s|%s' "$BUILD_ROLE_ARN" "$BASE_ARN" "$BASE_VERSION" "$URI" | sha256sum | cut -c1-12)"
 }
 
 # Get, List and Update take the image's ARN, not its name (Create takes the name).

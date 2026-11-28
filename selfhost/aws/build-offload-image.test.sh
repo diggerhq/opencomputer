@@ -2,7 +2,9 @@
 # The zip step of build-offload-image.sh in time zones on both sides of UTC,
 # with zip(1) and with the python3 fallback: each run must succeed, and every
 # run must make the same zip (its sha256 is in the "builder" line). Uses
-# --dry-run, so it makes no AWS call.
+# --dry-run, so it makes no AWS call. Also the clientTokens: the same inputs
+# give the same tokens, another build role (a re-created stack) other ones,
+# and each is at most 64 characters.
 #
 #   selfhost/aws/build-offload-image.test.sh
 set -euo pipefail
@@ -40,4 +42,11 @@ for tool in zip python3; do
   n="$(printf '%s\n' "${sums[@]}" | sed -n "s/^$tool://p" | sort -u | wc -l)"
   ((n <= 1)) || { echo "FAIL $tool: the zip differs between time zones"; fail=1; }
 done
+tokens() { "$SCRIPT" "${ARGS[@]}" "$@" 2>&1 | grep -o 'clientToken\\":\\"[^\\]*' | sed 's/.*"//' | sort -u; }
+a="$(tokens)" a2="$(tokens)" b="$(tokens --build-role-arn arn:aws:iam::123456789012:role/test-build-2)"
+if [[ -z $a || $a != "$a2" ]]; then echo "FAIL clientToken: not stable: $a / $a2"; fail=1
+elif [[ $(comm -12 <(echo "$a") <(echo "$b")) ]]; then echo "FAIL clientToken: the same for another build role"; fail=1
+elif awk 'length > 64 { bad = 1 } END { exit !bad }' <<<"$a"$'\n'"$b"; then echo "FAIL clientToken: over 64 characters"; fail=1
+else echo "ok   clientToken: $(wc -l <<<"$a") per role, $(awk '{ print length }' <<<"$a" | sort -n | tail -1) chars, new for another role"; fi
+
 ((fail == 0)) && echo "PASS" || { echo "FAIL"; exit 1; }
