@@ -13,7 +13,7 @@
 //   and no answer carries a credential.
 
 import net from 'node:net';
-import { chmodSync, chownSync, rmSync } from 'node:fs';
+import { chmodSync, chownSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { ControlResponse, Fence, Health } from '../offload-protocol.js';
 import { readLine } from '../offload-protocol.js';
@@ -69,8 +69,10 @@ export function serveControl(socket: string, d: ControlDeps, gid?: number): net.
     chmodSync(socket, 0o660);
     if (gid === undefined) return;
     try {
-      chownSync(path.dirname(socket), -1, gid);
-      chownSync(socket, -1, gid);
+      // Only where needed: the unit makes the directory the host's group
+      // (setgid), so the socket has it too, and a chown to a group oc-offload
+      // is not in fails with EPERM even when nothing would change.
+      for (const p of [path.dirname(socket), socket]) if (statSync(p).gid !== gid) chownSync(p, -1, gid);
     } catch (e) {
       log.warn(`offload control socket: could not give it group ${gid} (${(e as Error)?.message ?? e}); the host may not reach it`);
     }
