@@ -108,12 +108,12 @@ test('a thread seen before opens from memory, with no loading state', async ({ p
 
 test('scrolling up reads earlier pages without moving what is read', async ({ page }) => {
   await open(page, 'long')
-  const box = (await page.locator('[data-conversation]').boundingBox())!
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
   let pages = (await reads(page)).length
   let landed = 0
   for (let i = 0; landed < 3 && i < 4000; i++) {
-    await page.mouse.wheel(0, -240)
+    // Scrolled in steps, not by the wheel: WebKit animates a wheel scroll, and
+    // the view must be still for a move to be the page's doing.
+    await page.locator('[data-conversation]').evaluate((el) => (el.scrollTop -= 240))
     await page.waitForTimeout(16)
     if ((await reads(page)).length === pages) continue
     pages++
@@ -140,4 +140,26 @@ test('scrolling up reads earlier pages without moving what is read', async ({ pa
   }
   expect(landed).toBe(3)
   expect((await reads(page)).pop()).toMatch(/before=.*last=500|last=500.*before=/)
+})
+
+test('a thread the pointer rested on opens drawn, with nothing read on the way', async ({ page }) => {
+  await record(page)
+  await page.goto('/computer/work?fake=long')
+  const row = page.locator(`[data-nav="thread:${SID}"]`).first()
+  await row.hover()
+  await expect.poll(() => reads(page)).toContain('?last=200')
+  await page.waitForTimeout(300)
+  const before = await reads(page)
+  await frames(page)
+  await row.click()
+  await page.waitForSelector(ROW)
+  await page.waitForTimeout(500)
+  // From the first frame the pane is there, it shows the thread's end.
+  const pane = (await frames(page)).filter((f) => f.height > 0)
+  for (const f of pane) {
+    expect(f.rows).toBeGreaterThan(0)
+    expect(f.reading).toBe(false)
+    expect(f.bottom).toBeLessThanOrEqual(1)
+  }
+  expect((await reads(page)).filter((q) => q.includes('last='))).toEqual(before)
 })

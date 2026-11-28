@@ -38,7 +38,7 @@ interface Log {
 export interface Events {
   stream(sessionId: string): Stream<EventsUpdate>;
   earlier(sessionId: string): Promise<void>;
-  prefetch(sessionId: string): Promise<void>;
+  prefetch(sessionId: string): Promise<EventsUpdate | null>;
   connected(): void;
   onSocket(f: ServerFrame): void;
 }
@@ -232,6 +232,7 @@ export function createEvents(ctx: Ctx, onEvents: (sessionId: string, events: Api
       await log.loaded;
       log.ahead = true;
       await catchUp(log).finally(() => (log.ahead = false));
+      return log.prev ? { events: sorted(log), reset: { seq: null }, hasEarlier: log.prev.more } : null;
     },
     connected() {
       for (const log of logs.values()) if (log.subs.size()) start(log);

@@ -151,8 +151,11 @@ export interface Client {
   events(sessionId: string): Stream<EventsUpdate>;
   /** Extends the window back by one page; `events()` tells what it read. Calls made while one runs share it. */
   earlier(sessionId: string): Promise<void>;
-  /** Reads the window as `events()` does, without following it, so a later `events()` has it at once. */
-  prefetch(sessionId: string): Promise<void>;
+  /**
+   * Reads the window as `events()` does, without following it, so a later `events()` has it at once.
+   * Resolves with the window, as the update a first subscriber would get, or null when it could not be read.
+   */
+  prefetch(sessionId: string): Promise<EventsUpdate | null>;
   deltas(sessionId: string): Stream<Delta>;
   mutate<N extends MutationName>(name: N, args: MutationArgs[N]): { settled: Promise<void> };
   createSession(body: CreateSessionBody): { id: string; turnId: string; settled: Promise<void> };

@@ -131,5 +131,14 @@ export function watchConversations({
     }
   }
 
-  return { watching, begin, watch, earlier: (sid: string) => client.earlier(sid) }
+  // Reading ahead (work 139, 7.4): a thread nobody is looking at yet gets its
+  // window read into the store, without following, so it opens drawn in its
+  // first frame. Opening it tops the window up.
+  const ahead = async (sid: string): Promise<void> => {
+    if (watching.has(sid) || get().convos[sid] || !onServer(sid)) return
+    const u = await client.prefetch(sid)
+    if (u && !watching.has(sid) && !get().convos[sid]) onEvents(sid, u)
+  }
+
+  return { watching, begin, watch, ahead, earlier: (sid: string) => client.earlier(sid) }
 }

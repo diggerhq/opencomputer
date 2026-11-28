@@ -570,8 +570,10 @@ describe("a session's window", () => {
     const sid = await thread(w);
     await work(w, sid, 150);
     const truth = await eventsOf(w.me, sid);
-    await w.client.prefetch(sid);
+    const window = await w.client.prefetch(sid);
     expect(eventReads(w, sid)).toEqual(["last=200"]);
+    expect(window?.events.map((e) => e.seq)).toEqual(truth.slice(-200).map((e) => e.seq));
+    expect(window?.hasEarlier).toBe(true);
     const events = watchEvents(w.client, sid);
     await sleep(0);
     expect(events.updates).toHaveLength(1);

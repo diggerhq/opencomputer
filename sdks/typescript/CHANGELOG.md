@@ -10,7 +10,8 @@
 - New `earlier(sessionId)`: extends the window back by a page of up to 500
   events, told through `events()`. Calls made while one runs share it.
 - New `prefetch(sessionId)`: reads the window without following it, so a
-  later `events()` has it at once.
+  later `events()` has it at once. It resolves with the window, or null when
+  it could not be read.
 - A reader more than 500 events behind, or reset below everything it holds,
   is given the log's end again in one update instead of reading its way
   there.
