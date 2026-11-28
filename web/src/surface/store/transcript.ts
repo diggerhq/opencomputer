@@ -55,6 +55,23 @@ export type Step = { kind: 'step'; key: string; title: string; status: 'running'
 // `text` of thinking is empty when the model hid it.
 export type Entry = Step | { kind: 'thinking'; key: string; text: string; ms: number | null } | { kind: 'text'; key: string; text: string }
 
+// The failed steps that still mean something (work 147): those no later step
+// in the same block got past. Most failures are an agent's trial and error (a
+// search that found nothing, a missing file, a test fixed on the next try),
+// and a step that succeeds after them says the agent moved on. The same rule
+// holds while the block runs and once it ends, so settling changes nothing.
+export function failuresThatMatter(entries: readonly Entry[]): Set<Step> {
+  const out = new Set<Step>()
+  let passed = false
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const en = entries[i]
+    if (en.kind !== 'step') continue
+    if (en.status === 'done') passed = true
+    else if (en.status === 'failed' && !passed) out.add(en)
+  }
+  return out
+}
+
 export type OpenBlock = { blockId: string; type: string; turnId: string; text: string }
 
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null)
