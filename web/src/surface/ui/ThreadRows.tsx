@@ -6,6 +6,7 @@ import { askLine, type ThreadView } from '../store/views'
 import { ago } from './day-label'
 import { I } from './icons'
 import { Mk } from './Mark'
+import { MergeButton } from './MergeButton'
 import { ResultIcon } from './ResultIcon'
 import { resultTitle } from './result-text'
 
@@ -171,6 +172,7 @@ export function ThreadRow({
             <span className="truncate">{chip(shown)}</span>
           </span>
         )}
+        {shown && <MergeButton result={shown} className="flex-none" />}
         {more > 0 && (
           <span
             className={cn(CHIP, 'text-faint text-xs')}

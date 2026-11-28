@@ -9,6 +9,16 @@ export function resultTitle(r: ResultRow): string {
   return pr ? `PR #${pr[1]}` : (r.ref.split('/').pop() ?? r.ref)
 }
 
+// A pull request's state in a word, where there is room for one: nothing while
+// it is open, which is what a pull request is taken to be.
+export function pullState(r: ResultRow, refused = false): string | null {
+  const going = underWay(r)
+  if (going) return going === 'merge' ? 'merging…' : 'reverting…'
+  if (refused) return 'not merged'
+  if (revertOf(r)?.merged) return 'reverted'
+  return r.state && r.state !== 'open' ? r.state : null
+}
+
 // "open · checks passed", "+11,486 −493", "running".
 export function resultDetail(r: ResultRow): string {
   const m = r.meta ?? {}

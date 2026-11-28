@@ -2,9 +2,10 @@ import type { ReactElement } from 'react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useS, useSurface } from '../hooks'
-import { mergeable, pullAt, pullNumber, refusalOf, revertOf, underWay } from '../store/pulls'
+import { mergeable, pullAt, pullNumber, refusalOf } from '../store/pulls'
+import { MergeButton } from './MergeButton'
 import { ResultIcon } from './ResultIcon'
-import { resultTitle } from './result-text'
+import { pullState, resultTitle } from './result-text'
 import { Tip } from './Tip'
 
 // A link in a message to a pull request that is one of the reader's results
@@ -19,20 +20,7 @@ export function PullLink({ href, plain }: { href: string | undefined; plain: Rea
   const why = useS((s) => (r ? refusalOf(r, s.unmerged) : null))
   if (!r) return plain
   const n = pullNumber(r)
-  const going = underWay(r)
-  const revert = revertOf(r)
-  // An open pull request says nothing: open is what a link is taken to be.
-  const state = going
-    ? going === 'merge'
-      ? 'merging…'
-      : 'reverting…'
-    : why
-      ? 'not merged'
-      : revert?.merged
-        ? 'reverted'
-        : r.state && r.state !== 'open'
-          ? r.state
-          : null
+  const state = pullState(r, why !== null)
   const merge = mergeable(r)
   const chip = (
     <Button
@@ -54,18 +42,7 @@ export function PullLink({ href, plain }: { href: string | undefined; plain: Rea
   return (
     <span data-pull-link className="inline-flex max-w-full align-middle">
       {why ? <Tip label={`Not merged: ${why}`}>{chip}</Tip> : chip}
-      {merge && (
-        <Button
-          variant="secondary"
-          size="xs"
-          data-merge
-          className="border-background rounded-l-none border-l"
-          title={`Merge #${n} into its base branch`}
-          onClick={() => surface.merge(r.id)}
-        >
-          Merge
-        </Button>
-      )}
+      <MergeButton result={r} className="border-background rounded-l-none border-l" />
     </span>
   )
 }
